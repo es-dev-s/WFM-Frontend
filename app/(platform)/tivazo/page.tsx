@@ -7,6 +7,7 @@ import { ACTIVITY_COLUMNS } from "@/components/data/activity-columns";
 import { ControlBar } from "@/components/data/ControlBar";
 import { DataTable } from "@/components/data/DataTable";
 import { QueryState } from "@/components/data/QueryState";
+import { TivazoStatCards } from "@/components/data/TivazoStatCards";
 import { TivazoInspector } from "@/components/data/TivazoInspector";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useMenu } from "@/hooks/use-menu";
@@ -14,6 +15,7 @@ import {
   type DailyLogRow,
   type TivazoActivitiesPage,
   type TivazoGroupsResponse,
+  type TivazoSummary,
   useInfinitePage,
   useQuery,
   withQuery,
@@ -77,6 +79,8 @@ export default function TivazoPage() {
   );
 
   const groups = useQuery<TivazoGroupsResponse>("/tivazo/groups");
+  const summaryKey = withQuery("/tivazo/summary", listParams);
+  const summary = useQuery<TivazoSummary>(summaryKey);
   const page = useInfinitePage<DailyLogRow, TivazoActivitiesPage>(
     filterKey,
     buildListUrl,
@@ -119,6 +123,17 @@ export default function TivazoPage() {
       data-inspector={inspectorOpen ? "true" : "false"}
     >
       <div className="smp-stage">
+        {summary.data ? (
+          <TivazoStatCards summary={summary.data} />
+        ) : (
+          <QueryState
+            loading={summary.loading}
+            error={summary.error}
+            onRetry={summary.reload}
+            label="Tivazo summary"
+          />
+        )}
+
         <ControlBar
           stats={[
             {

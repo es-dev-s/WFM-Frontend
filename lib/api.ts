@@ -38,12 +38,44 @@ export type MetricCard = {
   positive: boolean;
 };
 
+export type DashboardSummary = {
+  totalTeams: number;
+  totalMembers: number;
+  biomaticTeams: number;
+  tivazoTeams: number;
+  biomaticMembers: number;
+  tivazoMembers: number;
+  avgWorkHours: string;
+  avgBreakTime: string;
+};
+
+export type DashboardOverview = {
+  summary: DashboardSummary;
+  filters: FilterOptions;
+  trend: TrendPoint[];
+  leaderboard: Leaderboard;
+  hourly: HourlyPoint[];
+  biomatic: BiomaticSummary;
+  tivazo: TivazoSummary;
+};
+
 export type TrendPoint = {
   day: string;
   value: number;
 };
 
-export type TrendMetric = "present";
+export type HourlyPoint = {
+  hour: number;
+  label: string;
+  value: number;
+};
+
+export type TrendMetric =
+  | "present"
+  | "attendance"
+  | "occupancy"
+  | "utilization"
+  | "wtr";
 
 export type LeaderRow = {
   id: string;
@@ -175,8 +207,24 @@ export type TivazoActivitiesPage = ListPage<DailyLogRow> & {
   absent: number;
 };
 
+export type BiomaticSummary = {
+  totalMembers: number;
+  presentMembers: number;
+  absentMembers: number;
+};
+
 export type TivazoGroupsResponse = {
   groups: FilterOption[];
+};
+
+export type TivazoSummary = {
+  totalMembers: number;
+  activeMembers: number;
+  idleMembers: number;
+  breakMembers: number;
+  lateMembers: number;
+  absentMembers: number;
+  avgWorkHours: string;
 };
 
 export type SearchHit = {
@@ -246,6 +294,7 @@ function shouldSerialize(path: string): boolean {
   const bare = path.split("?")[0];
   return (
     bare.startsWith("/dashboard") ||
+    bare.startsWith("/biomatic") ||
     bare === "/teams" ||
     bare.startsWith("/teams/") ||
     bare === "/members" ||

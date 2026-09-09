@@ -3,82 +3,66 @@
 import { buildSmoothAreaPath, buildSmoothPath } from "@/components/data/chart-curve";
 import { ChartHoverOverlay } from "@/components/data/ChartHoverOverlay";
 import { pickNearestIndex, useChartWidth } from "@/components/data/useChartWidth";
-import type { TrendMetric, TrendPoint } from "@/lib/api";
+import type { HourlyPoint } from "@/lib/api";
 import { useCallback, useId, useMemo, useRef, useState } from "react";
 
-const HEIGHT = 148;
+const HEIGHT = 200;
 const PAD_LEFT = 20;
 const PAD_RIGHT = 20;
 const PAD_TOP = 28;
-const PAD_BOTTOM = 28;
+const PAD_BOTTOM = 36;
+const HOURS = 24;
 
-function formatValue(value: number, metric: TrendMetric): string {
-  if (metric === "present") {
-    return `${Math.round(value)} members`;
-  }
-  if (metric === "attendance" || metric === "occupancy" || metric === "utilization") {
-    return `${value.toFixed(1)}%`;
-  }
-  return value.toFixed(1);
+function compactHourLabel(hour: number): string {
+  if (hour === 0) return "12a";
+  if (hour < 12) return `${hour}a`;
+  if (hour === 12) return "12p";
+  return `${hour - 12}p`;
 }
 
-function isPercentMetric(metric: TrendMetric): boolean {
-  return metric === "attendance" || metric === "occupancy" || metric === "utilization";
-}
-
-export function TrendChart({
-  points,
-  label,
-  metric = "present",
-}: {
-  points: TrendPoint[];
-  label: string;
-  metric?: TrendMetric;
-}) {
+export function HourlyChart({ points }: { points: HourlyPoint[] }) {
   const gradientId = useId().replace(/:/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
   const { containerRef, width } = useChartWidth();
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
-  const geometry = useMemo(() => {
-    if (points.length === 0) return null;
+  const series = useMemo(() => {
+    const byHour = new Map(points.map((point) => [point.hour, point]));
+    return Array.from({ length: HOURS }, (_, hour) => {
+      const existing = byHour.get(hour);
+      return {
+        hour,
+        label: existing?.label ?? compactHourLabel(hour),
+        value: existing?.value ?? 0,
+      };
+    });
+  }, [points]);
 
-    const values = points.map((point) => point.value);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const percent = isPercentMetric(metric);
-    const paddedMin = percent ? 0 : min - (max - min || 1) * 0.08;
-    const paddedMax = percent ? Math.max(max * 1.15, 5) : max + (max - min || 1) * 0.08;
-    const range = paddedMax - paddedMin || 1;
+  const total = series.reduce((sum, point) => sum + point.value, 0);
+
+  const geometry = useMemo(() => {
+    const values = series.map((point) => point.value);
+    const max = Math.max(...values, 1);
     const innerW = width - PAD_LEFT - PAD_RIGHT;
     const innerH = HEIGHT - PAD_TOP - PAD_BOTTOM;
-    const step = points.length === 1 ? 0 : innerW / (points.length - 1);
+    const step = innerW / (HOURS - 1);
     const baseline = HEIGHT - PAD_BOTTOM;
 
-    const coords = points.map((point, index) => {
+    const coords = series.map((point, index) => {
       const x = PAD_LEFT + step * index;
-      const y = PAD_TOP + innerH - ((point.value - paddedMin) / range) * innerH;
-      return { x, y, label: point.day, value: point.value };
+      const y = PAD_TOP + innerH - (point.value / max) * innerH;
+      return { x, y, label: point.label, value: point.value, hour: point.hour };
     });
 
     const line = buildSmoothPath(coords);
     const area = buildSmoothAreaPath(coords, baseline);
 
-    const axisLabels = [
-      coords[0],
-      coords[Math.floor((coords.length - 1) / 2)],
-      coords[coords.length - 1],
-    ].filter(
-      (point, index, list) =>
-        list.findIndex((item) => item.label === point.label) === index,
-    );
-
-    return { coords, line, area, baseline, axisLabels };
-  }, [points, metric, width]);
+    return { coords, line, area, baseline, max };
+  }, [series, width]);
 
   const pickIndex = useCallback(
     (clientX: number) => {
-      if (!geometry || !svgRef.current) return;
+      if (!svgRef.current) return;
       const nearest = pickNearestIndex(
         clientX,
         svgRef.current.getBoundingClientRect(),
@@ -87,11 +71,15 @@ export function TrendChart({
       );
       setActiveIndex((prev) => (prev === nearest ? prev : nearest));
     },
-    [geometry, width],
+    [geometry.coords, width],
   );
 
-  if (!geometry) {
-    return <p className="smp-muted">No trend data for this period.</p>;
+  if (total === 0) {
+    return (
+      <div className="smp-chart-wrap smp-chart-wrap--hourly">
+        <p className="smp-chart-empty">No clock-ins recorded yet for this day.</p>
+      </div>
+    );
   }
 
   const active =
@@ -103,16 +91,16 @@ export function TrendChart({
   return (
     <div
       ref={containerRef}
-      className="smp-chart-wrap"
+      className="smp-chart-wrap smp-chart-wrap--hourly"
       onMouseLeave={() => setActiveIndex(null)}
     >
       <div className="smp-chart-stage">
         <svg
           ref={svgRef}
-          className="smp-chart smp-chart--minimal smp-chart--interactive"
+          className="smp-chart smp-chart--hourly smp-chart--interactive"
           viewBox={`0 0 ${width} ${HEIGHT}`}
           role="img"
-          aria-label={`${label} trend`}
+          aria-label="Hourly clock-ins"
           onMouseMove={(event) => pickIndex(event.clientX)}
           onTouchMove={(event) => {
             const touch = event.touches[0];
@@ -138,12 +126,12 @@ export function TrendChart({
             fill={`url(#${gradientId})`}
           />
           <path className="smp-chart__line" d={geometry.line} />
-          {geometry.axisLabels.map((point) => (
+          {geometry.coords.map((point) => (
             <text
-              key={point.label}
-              className="smp-chart__label"
+              key={point.hour}
+              className="smp-chart__label smp-chart__label--dense"
               x={point.x}
-              y={HEIGHT - 8}
+              y={HEIGHT - 6}
               textAnchor="middle"
             >
               {point.label}
@@ -168,11 +156,11 @@ export function TrendChart({
         >
           <span className="smp-chart-tooltip__date">{active.label}</span>
           <span className="smp-chart-tooltip__value">
-            {formatValue(active.value, metric)}
+            {Math.round(active.value)} clock-ins
           </span>
         </div>
       ) : (
-        <p className="smp-chart-hint">Hover the line to inspect each day</p>
+        <p className="smp-chart-hint">Hover to see clock-ins by hour</p>
       )}
     </div>
   );

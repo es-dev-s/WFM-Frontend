@@ -7,12 +7,14 @@ import {
   MEMBER_COLUMNS,
   TEAM_COLUMNS,
 } from "@/components/data/activity-columns";
+import { BiomaticStatCards } from "@/components/data/BiomaticStatCards";
 import { ControlBar } from "@/components/data/ControlBar";
 import { DataTable } from "@/components/data/DataTable";
 import { QueryState } from "@/components/data/QueryState";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   type DailyLogRow,
+  type BiomaticSummary,
   type FilterOptions,
   type ListPage,
   type MemberDirectoryRow,
@@ -73,6 +75,11 @@ export default function BiomaticPage() {
   );
 
   const filters = useQuery<FilterOptions>("/filters");
+  const summaryKey = withQuery("/biomatic/summary", {
+    teamId: teamId || undefined,
+    role: roleId || undefined,
+  });
+  const summary = useQuery<BiomaticSummary>(summaryKey);
   const teams = useQuery<Team[]>(tab === "teams" ? "/teams" : null);
   const members = useInfinitePage<MemberDirectoryRow, ListPage<MemberDirectoryRow>>(
     membersKey,
@@ -122,6 +129,17 @@ export default function BiomaticPage() {
   return (
     <div className="smp-page-stack smp-page-stack--fill">
       <div className="smp-stage">
+        {summary.data ? (
+          <BiomaticStatCards summary={summary.data} />
+        ) : (
+          <QueryState
+            loading={summary.loading}
+            error={summary.error}
+            onRetry={summary.reload}
+            label="Biomatic summary"
+          />
+        )}
+
         <ControlBar
           leading={
             <div

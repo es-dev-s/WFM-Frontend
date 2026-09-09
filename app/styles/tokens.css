@@ -39,6 +39,20 @@
   --smp-accent-strong: #18663e;
   --smp-accent-press: #145534;
 
+  /* Stat card pastels */
+  --smp-stat-rose: #d4898f;
+  --smp-stat-rose-muted: rgba(212, 137, 143, 0.16);
+  --smp-stat-blue: #6b9fd4;
+  --smp-stat-blue-muted: rgba(107, 159, 212, 0.16);
+  --smp-stat-orange: #e09a5a;
+  --smp-stat-orange-muted: rgba(224, 154, 90, 0.16);
+  --smp-stat-purple: #a88bd4;
+  --smp-stat-purple-muted: rgba(168, 139, 212, 0.16);
+  --smp-stat-teal: #5db8b0;
+  --smp-stat-teal-muted: rgba(93, 184, 176, 0.16);
+  --smp-stat-amber: #d9b05a;
+  --smp-stat-amber-muted: rgba(217, 176, 90, 0.16);
+
   --smp-danger: #ff3b30;
   --smp-danger-text: #d70015;
 
@@ -183,6 +197,19 @@ html[data-theme="dark"] {
   --smp-accent-muted: rgba(60, 184, 114, 0.22);
   --smp-accent-strong: #58d08a;
   --smp-accent-press: #2a9e62;
+
+  --smp-stat-rose: #e8999f;
+  --smp-stat-rose-muted: rgba(232, 153, 159, 0.22);
+  --smp-stat-blue: #7eb3e8;
+  --smp-stat-blue-muted: rgba(126, 179, 232, 0.22);
+  --smp-stat-orange: #f0ad6a;
+  --smp-stat-orange-muted: rgba(240, 173, 106, 0.22);
+  --smp-stat-purple: #b99ee8;
+  --smp-stat-purple-muted: rgba(185, 158, 232, 0.22);
+  --smp-stat-teal: #6ecbc3;
+  --smp-stat-teal-muted: rgba(110, 203, 195, 0.22);
+  --smp-stat-amber: #e8c06a;
+  --smp-stat-amber-muted: rgba(232, 192, 106, 0.22);
 
   --smp-danger: #ff453a;
   --smp-danger-text: #ff6961;

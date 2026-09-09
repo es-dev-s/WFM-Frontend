@@ -292,6 +292,14 @@
   background: var(--smp-accent-muted);
   color: var(--smp-ink-primary);
   border-radius: 0;
+  transition: background-color 0.12s ease;
+}
+
+.smp-range__hint {
+  margin: 0;
+  color: var(--smp-ink-tertiary);
+  font-size: 11px;
+  text-align: center;
 }
 
 .smp-range__day--btn[data-start="true"],

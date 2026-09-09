@@ -19,6 +19,8 @@ type DateRangePickerProps = {
   end: string;
   max?: string;
   onChange: (start: string, end: string) => void;
+  variant?: "default" | "dashboard";
+  showPresets?: boolean;
 };
 
 export function DateRangePicker({
@@ -26,6 +28,8 @@ export function DateRangePicker({
   end,
   max,
   onChange,
+  variant = "default",
+  showPresets = true,
 }: DateRangePickerProps) {
   const today = useMemo(() => isoDateInZone(), []);
   const latest = max ?? today;
@@ -118,23 +122,29 @@ export function DateRangePicker({
     (item) => item.start === start && item.end === end,
   )?.id;
 
+  const isDashboard = variant === "dashboard";
+
   return (
     <div
       className="smp-range"
       ref={rootRef}
       data-open={open ? "true" : "false"}
+      data-variant={variant}
     >
-      <span className="smp-field__label">Dates</span>
+      {!isDashboard ? <span className="smp-field__label">Dates</span> : null}
       <button
         type="button"
-        className="smp-range__trigger"
+        className={isDashboard ? "smp-dashboard-date__trigger" : "smp-range__trigger"}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={menuId}
+        aria-label={`Date range ${formatRangeLabel(start, end)}`}
         onClick={() => (open ? setOpen(false) : openPicker())}
       >
-        <CalendarDays size={16} strokeWidth={1.75} />
-        <span className="smp-range__value">{formatRangeLabel(start, end)}</span>
+        <CalendarDays size={18} strokeWidth={1.75} />
+        {!isDashboard ? (
+          <span className="smp-range__value">{formatRangeLabel(start, end)}</span>
+        ) : null}
       </button>
 
       <div
@@ -203,19 +213,24 @@ export function DateRangePicker({
             })}
           </div>
 
-          <div className="smp-range__presets" role="group" aria-label="Quick ranges">
-            {presets.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className="smp-chip"
-                data-active={activePreset === item.id ? "true" : "false"}
-                onClick={() => apply(item.start, item.end)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          {showPresets ? (
+            <div className="smp-range__presets" role="group" aria-label="Quick ranges">
+              {presets.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="smp-chip"
+                  data-active={activePreset === item.id ? "true" : "false"}
+                  onClick={() => apply(item.start, item.end)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {pickingEnd ? (
+            <p className="smp-range__hint">Select the end date</p>
+          ) : null}
         </div>
       </div>
     </div>
