@@ -23,8 +23,8 @@ const instrumentSans = Instrument_Sans({
 
 export const metadata: Metadata = {
   title: {
-    default: "Schola — Workforce",
-    template: "%s · Schola",
+    default: "WFM — Workforce",
+    template: "%s · WFM",
   },
   description: "Workforce operations for Tivazo and Biomatic.",
 };

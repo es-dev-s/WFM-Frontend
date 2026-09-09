@@ -108,7 +108,7 @@ function SidebarComponent() {
         <div className="smp-sidebar__brand-spacer" aria-hidden="true" />
 
         <div className="smp-sidebar__brand-copy">
-          <span className="smp-sidebar__brand-name">Schola</span>
+          <span className="smp-sidebar__brand-name">WFM</span>
           <span className="smp-sidebar__brand-meta">Workforce</span>
         </div>
       </div>

@@ -7,11 +7,10 @@ import { getBreadcrumbs } from "@/lib/navigation";
 import { useUIStore } from "@/store/use-ui-store";
 import { NavbarBreadcrumb } from "./NavbarBreadcrumb";
 import { NavbarSearch } from "./NavbarSearch";
-import { NotificationMenu } from "./NotificationMenu";
 import { ProfileMenu } from "./ProfileMenu";
 import { ThemeToggle } from "./ThemeToggle";
 
-type OpenMenu = "notifications" | "profile" | null;
+type OpenMenu = "profile" | null;
 
 function NavbarComponent() {
   const pathname = usePathname();
@@ -28,10 +27,6 @@ function NavbarComponent() {
   useEffect(() => {
     setOpenMenu(null);
   }, [pathname]);
-
-  const onNotificationsOpenChange = useCallback((open: boolean) => {
-    setOpenMenu(open ? "notifications" : null);
-  }, []);
 
   const onProfileOpenChange = useCallback((open: boolean) => {
     setOpenMenu(open ? "profile" : null);
@@ -58,10 +53,6 @@ function NavbarComponent() {
 
         <div className="smp-navbar__actions">
           <ThemeToggle />
-          <NotificationMenu
-            open={openMenu === "notifications"}
-            onOpenChange={onNotificationsOpenChange}
-          />
         </div>
 
         <div className="smp-navbar__divider" aria-hidden="true" />

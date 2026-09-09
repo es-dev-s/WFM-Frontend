@@ -91,6 +91,15 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   },
 ];
 
+export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] =
+  ACTIVITY_COLUMNS.map((column) =>
+    column.id === "group"
+      ? { ...column, header: "Tivazo group" }
+      : column.id === "role"
+        ? { ...column, header: "Designation" }
+        : column,
+  );
+
 export const MEMBER_COLUMNS: DataColumn<MemberDirectoryRow>[] = [
   {
     id: "name",

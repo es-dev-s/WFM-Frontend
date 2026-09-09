@@ -3,7 +3,7 @@
 import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { FilterSearch } from "@/components/ui/FilterSearch";
 import { FilterSelect } from "@/components/ui/FilterSelect";
-import { ACTIVITY_COLUMNS } from "@/components/data/activity-columns";
+import { TIVAZO_ACTIVITY_COLUMNS } from "@/components/data/activity-columns";
 import { ControlBar } from "@/components/data/ControlBar";
 import { DataTable } from "@/components/data/DataTable";
 import { QueryState } from "@/components/data/QueryState";
@@ -183,7 +183,7 @@ export default function TivazoPage() {
           />
         ) : (
           <DataTable
-            columns={ACTIVITY_COLUMNS}
+            columns={TIVAZO_ACTIVITY_COLUMNS}
             rows={items}
             getKey={rowKey}
             selectedKey={selectedRow?.id ?? null}
