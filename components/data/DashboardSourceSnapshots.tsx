@@ -84,6 +84,7 @@ export function DashboardSourceSnapshots({
   const biomaticStats: MiniStat[] = biomatic
     ? [
         { label: "Present", value: biomatic.presentMembers, icon: UserCheck, tone: "green" },
+        { label: "Late", value: biomatic.lateMembers, icon: AlarmClock, tone: "amber" },
         { label: "Absent", value: biomatic.absentMembers, icon: UserX, tone: "rose" },
         { label: "Total", value: biomatic.totalMembers, icon: Users, tone: "blue" },
       ]
@@ -105,7 +106,7 @@ export function DashboardSourceSnapshots({
         href="/biomatic"
         stats={biomaticStats}
         loading={biomaticLoading}
-        skeletonCount={3}
+        skeletonCount={4}
       />
       <SourcePanel
         title="Tivazo"

@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const API_ORIGIN = process.env.API_ORIGIN ?? "http://127.0.0.1:18780";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["10.75.75.57"],
   // Tree-shake lucide icons — critical when many modules import from the package
   experimental: {
     optimizePackageImports: ["lucide-react"],

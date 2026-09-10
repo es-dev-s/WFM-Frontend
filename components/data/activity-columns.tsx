@@ -135,12 +135,12 @@ export const MEMBER_COLUMNS: DataColumn<MemberDirectoryRow>[] = [
     render: (row) => <CellText value={row.role} />,
   },
   {
-    id: "status",
-    header: "Status",
+    id: "day",
+    header: "Day",
     width: "104px",
     align: "center",
     priority: 1,
-    render: (row) => <StatusPill value={row.status} />,
+    render: (row) => <StatusPill value={row.dayStatus} />,
   },
   {
     id: "groups",
@@ -174,7 +174,7 @@ export const TEAM_COLUMNS: DataColumn<Team>[] = [
   },
   {
     id: "members",
-    header: "People",
+    header: "Member",
     width: "120px",
     align: "right",
     priority: 1,
@@ -187,22 +187,6 @@ export const TEAM_COLUMNS: DataColumn<Team>[] = [
     align: "right",
     priority: 1,
     render: (row) => <CellText value={row.composition.agents} />,
-  },
-  {
-    id: "leads",
-    header: "Leads",
-    width: "120px",
-    align: "right",
-    priority: 2,
-    render: (row) => <CellText value={row.composition.leads} />,
-  },
-  {
-    id: "supers",
-    header: "Supervisors",
-    width: "120px",
-    align: "right",
-    priority: 2,
-    render: (row) => <CellText value={row.composition.supervisors} />,
   },
 ];
 

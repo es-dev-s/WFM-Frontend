@@ -149,6 +149,7 @@ export type Member = {
   wtr: string;
   attendance: string;
   status: string;
+  dayStatus: string;
   workspaceId: string;
   groups: string[];
   allTimeWorkHour: number;
@@ -211,6 +212,7 @@ export type BiomaticSummary = {
   totalMembers: number;
   presentMembers: number;
   absentMembers: number;
+  lateMembers: number;
 };
 
 export type TivazoGroupsResponse = {

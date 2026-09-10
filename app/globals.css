@@ -1,10 +1,10 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
 @import "./styles/base.css";
-@import "./styles/glass.css";
 @import "./styles/layout.css";
 @import "./styles/menus.css";
 @import "./styles/data.css";
 @import "./styles/filters.css";
+@import "./styles/glass.css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));

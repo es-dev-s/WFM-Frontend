@@ -1,10 +1,10 @@
 "use client";
 
 import type { BiomaticSummary } from "@/lib/api";
-import { UserCheck, UserX, Users } from "lucide-react";
+import { AlarmClock, UserCheck, UserX, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-type CardTone = "green" | "rose" | "blue";
+type CardTone = "green" | "rose" | "blue" | "amber";
 
 type StatCardConfig = {
   key: keyof BiomaticSummary;
@@ -15,6 +15,7 @@ type StatCardConfig = {
 
 const STAT_CARDS: StatCardConfig[] = [
   { key: "presentMembers", label: "Present", icon: UserCheck, tone: "green" },
+  { key: "lateMembers", label: "Late", icon: AlarmClock, tone: "amber" },
   { key: "absentMembers", label: "Absent", icon: UserX, tone: "rose" },
   { key: "totalMembers", label: "Total Members", icon: Users, tone: "blue" },
 ];

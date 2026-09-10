@@ -26,7 +26,7 @@ export type ProfileAction = {
 
 export const CURRENT_USER = {
   name: "Ava Rajan",
-  role: "Head of School",
+  role: "Admin",
   email: "ava.rajan@schola.edu",
   initials: "AR",
 };
@@ -80,7 +80,7 @@ export const PROFILE_ACTIONS: ProfileAction[] = [
   {
     id: "help",
     label: "Help & support",
-    description: "Guides and campus helpdesk",
+    description: "Guides",
     href: "/settings",
     icon: CircleHelp,
   },
@@ -89,7 +89,7 @@ export const PROFILE_ACTIONS: ProfileAction[] = [
 export const LOGOUT_ACTION: ProfileAction = {
   id: "logout",
   label: "Log out",
-  description: "Sign out of Schola",
+  description: "Sign out of WFM",
   icon: LogOut,
   tone: "danger",
 };
