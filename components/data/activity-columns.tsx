@@ -167,8 +167,9 @@ export const TEAM_COLUMNS: DataColumn<Team>[] = [
   {
     id: "name",
     header: "Team",
-    width: "168px",
+    width: "220px",
     sticky: true,
+    align: "center",
     priority: 1,
     render: (row) => <CellText value={row.name} />,
   },
@@ -176,17 +177,9 @@ export const TEAM_COLUMNS: DataColumn<Team>[] = [
     id: "members",
     header: "Member",
     width: "120px",
-    align: "right",
+    align: "center",
     priority: 1,
     render: (row) => <CellText value={row.members} />,
-  },
-  {
-    id: "agents",
-    header: "Agents",
-    width: "120px",
-    align: "right",
-    priority: 1,
-    render: (row) => <CellText value={row.composition.agents} />,
   },
 ];
 

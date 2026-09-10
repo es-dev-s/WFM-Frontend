@@ -1584,6 +1584,7 @@
 .smp-table td[data-align="center"] .smp-cell-text,
 .smp-table td[data-align="center"] .smp-id-cell {
   margin-inline: auto;
+  text-align: center;
 }
 
 .smp-table th[data-sticky="true"],
