@@ -113,6 +113,7 @@ export function DateRangePicker({
       setDraftStart(iso);
       setDraftEnd(iso);
       setPickingEnd(true);
+      onChange(iso, iso);
       return;
     }
     apply(draftStart, iso);

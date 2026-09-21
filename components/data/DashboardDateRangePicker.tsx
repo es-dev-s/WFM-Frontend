@@ -1,11 +1,11 @@
 "use client";
 
 import { DateRangePicker } from "@/components/ui/DateRangePicker";
-import { addDaysISO, formatDisplayDate, isoDateInZone } from "@/lib/datetime";
+import { formatDisplayDate, isoDateInZone } from "@/lib/datetime";
 
 export function defaultDashboardRange() {
   const today = isoDateInZone();
-  return { start: addDaysISO(today, -13), end: today };
+  return { start: today, end: today };
 }
 
 export function DashboardDateRangePicker({
@@ -24,6 +24,7 @@ export function DashboardDateRangePicker({
         showPresets
         start={start}
         end={end}
+        max={isoDateInZone()}
         onChange={onChange}
       />
       <span className="smp-dashboard-date__label" aria-live="polite">

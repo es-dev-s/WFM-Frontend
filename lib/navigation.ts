@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Fingerprint, House, Settings, Timer } from "lucide-react";
+import { Fingerprint, House, Settings, Timer, Users } from "lucide-react";
 
 export type NavItem = {
   label: string;
@@ -38,19 +38,34 @@ export type PageMeta = {
 export const NAVIGATION: NavGroup[] = [
   {
     id: "platform",
-    label: "Platform",
+    label: "Workspace",
     items: [
       { label: "Home", href: "/", icon: House },
       { label: "Tivazo", href: "/tivazo", icon: Timer },
-      { label: "Biomatic", href: "/biomatic", icon: Fingerprint },
+      { label: "Biometrics", href: "/biomatic", icon: Fingerprint },
+      { label: "Users", href: "/users", icon: Users },
     ],
   },
 ];
+
+export function getPlatformNav(role?: "wfm" | "team_lead" | "hr"): NavGroup[] {
+  return NAVIGATION.map((group) => ({
+    ...group,
+    items:
+      role === "wfm"
+        ? group.items
+        : group.items.filter((item) => item.href !== "/users"),
+  }));
+}
 
 /** Pinned to the sidebar foot — always visible, outside the scroll groups. */
 export const UTILITY_NAV: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
+
+export function getUtilityNav(_role?: "wfm" | "team_lead" | "hr"): NavItem[] {
+  return UTILITY_NAV;
+}
 
 const UTILITY_GROUP: NavGroup = {
   id: "utility",
@@ -78,7 +93,7 @@ export function getPageMeta(pathname: string): PageMeta {
   const match = findMatchedNav(pathname);
   return match
     ? { title: match.item.label, eyebrow: match.group.label }
-    : { title: "Home", eyebrow: "Platform" };
+    : { title: "Home", eyebrow: "Workspace" };
 }
 
 function titleizeSegment(segment: string): string {
@@ -118,7 +133,7 @@ export function getBreadcrumbs(
   const match = findMatchedNav(pathname);
   const meta = match
     ? { title: match.item.label, eyebrow: match.group.label, href: match.item.href }
-    : { title: "Home", eyebrow: "Platform", href: "/" };
+    : { title: "Home", eyebrow: "Workspace", href: "/" };
 
   const crumbs: Breadcrumb[] = [];
   if (meta.eyebrow && meta.eyebrow !== meta.title) {

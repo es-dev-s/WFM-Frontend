@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Biomatic",
+  title: "Biometrics",
 };
 
 export default function BiomaticLayout({

@@ -3,15 +3,16 @@
 import { memo, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PanelLeft, PanelLeftClose } from "lucide-react";
+import { PanelLeftClose } from "lucide-react";
 import { MOBILE_NAV_QUERY } from "@/hooks/use-media-query";
 import {
-  NAVIGATION,
-  UTILITY_NAV,
+  getPlatformNav,
+  getUtilityNav,
   formatBadgeCount,
   isNavItemActive,
   type NavItem,
 } from "@/lib/navigation";
+import { useSessionOptional } from "@/components/auth/SessionProvider";
 import { useUIStore } from "@/store/use-ui-store";
 import { BrandMark } from "./BrandMark";
 import { useShell } from "./shell-context";
@@ -62,19 +63,23 @@ function SidebarComponent() {
   const pathname = usePathname();
   const { sidebarCollapsed, toggleSidebar, collapseSidebar } = useShell();
   const closeMobileNav = useUIStore((s) => s.closeMobileNav);
+  const session = useSessionOptional();
+  const utilityNav = getUtilityNav(session?.role);
+  const navigation = getPlatformNav(session?.role);
 
   const onBrandControlClick = useCallback(() => {
     if (window.matchMedia(MOBILE_NAV_QUERY).matches) return;
-    toggleSidebar();
-  }, [toggleSidebar]);
+    if (sidebarCollapsed) toggleSidebar();
+  }, [sidebarCollapsed, toggleSidebar]);
+
+  const onCollapseClick = useCallback(() => {
+    if (window.matchMedia(MOBILE_NAV_QUERY).matches) return;
+    collapseSidebar();
+  }, [collapseSidebar]);
 
   const onNavClick = useCallback(() => {
     closeMobileNav();
-    if (window.matchMedia(MOBILE_NAV_QUERY).matches) return;
-    collapseSidebar();
-  }, [closeMobileNav, collapseSidebar]);
-
-  const brandAction = sidebarCollapsed ? "Show labels" : "Icon rail";
+  }, [closeMobileNav]);
 
   return (
     <aside className="smp-sidebar" aria-label="Primary">
@@ -83,61 +88,72 @@ function SidebarComponent() {
           type="button"
           className="smp-sidebar__brand-control"
           onClick={onBrandControlClick}
-          aria-label={brandAction}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "WFM"}
           aria-pressed={!sidebarCollapsed}
           tabIndex={0}
         >
-          <span
-            className="smp-sidebar__brand-face smp-sidebar__brand-face--mark"
-            aria-hidden="true"
-          >
-            <BrandMark />
-          </span>
-          <span
-            className="smp-sidebar__brand-face smp-sidebar__brand-face--action"
-            aria-hidden="true"
-          >
-            {sidebarCollapsed ? (
-              <PanelLeft strokeWidth={1.75} />
-            ) : (
-              <PanelLeftClose strokeWidth={1.75} />
-            )}
-          </span>
+          <BrandMark />
         </button>
-
-        <div className="smp-sidebar__brand-spacer" aria-hidden="true" />
 
         <div className="smp-sidebar__brand-copy">
           <span className="smp-sidebar__brand-name">WFM</span>
-          <span className="smp-sidebar__brand-meta">Workforce</span>
+          <span className="smp-sidebar__brand-meta">Entegra</span>
         </div>
+
+        <button
+          type="button"
+          className="smp-sidebar__collapse"
+          onClick={onCollapseClick}
+          aria-label="Collapse sidebar"
+          tabIndex={sidebarCollapsed ? -1 : 0}
+        >
+          <PanelLeftClose size={16} strokeWidth={1.75} />
+        </button>
       </div>
 
       <div className="smp-sidebar__scroll">
-        {NAVIGATION.map((group) => (
+        {navigation.map((group) => (
           <div key={group.id} className="smp-sidebar__group">
             <div className="smp-sidebar__group-label">{group.label}</div>
             <nav className="smp-sidebar__nav" aria-label={group.label}>
-              {group.items.map((item) => {
-                const active = isNavItemActive(pathname, item.href);
-
-                return (
-                  <SidebarNavItem
-                    key={item.href}
-                    item={item}
-                    active={active}
-                    onNavClick={onNavClick}
-                  />
-                );
-              })}
+              {group.items.map((item) => (
+                <SidebarNavItem
+                  key={item.href}
+                  item={item}
+                  active={isNavItemActive(pathname, item.href)}
+                  onNavClick={onNavClick}
+                />
+              ))}
             </nav>
           </div>
         ))}
       </div>
 
       <div className="smp-sidebar__foot">
+        {session ? (
+          <div className="smp-nav-slot">
+            <Link
+              href="/settings"
+              className="smp-sidebar__account"
+              onClick={onNavClick}
+              aria-label={`${session.name}, ${session.roleLabel}`}
+            >
+              <span className="smp-sidebar__avatar" aria-hidden="true">
+                {session.initials}
+              </span>
+              <span className="smp-sidebar__account-copy">
+                <span className="smp-sidebar__account-name">{session.name}</span>
+                <span className="smp-sidebar__account-role">{session.roleLabel}</span>
+              </span>
+            </Link>
+            <span className="smp-nav-item__tooltip" aria-hidden="true">
+              {session.name}
+            </span>
+          </div>
+        ) : null}
+
         <nav className="smp-sidebar__nav" aria-label="Utility">
-          {UTILITY_NAV.map((item) => (
+          {utilityNav.map((item) => (
             <SidebarNavItem
               key={item.href}
               item={item}

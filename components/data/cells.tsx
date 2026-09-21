@@ -9,9 +9,21 @@ export function dash(value: string | number | null | undefined): string {
   return text === "" ? "—" : text;
 }
 
+const OPAQUE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function readableToken(value: string | number | null | undefined): string {
+  const text = String(value ?? "").trim();
+  if (!text || OPAQUE_ID.test(text)) return "";
+  return text;
+}
+
 export function joinGroups(groups: string[] | undefined, fallback = ""): string {
-  const names = (groups ?? []).map((item) => item.trim()).filter(Boolean);
-  if (names.length === 0) return fallback || "—";
+  const names = (groups ?? [])
+    .map((item) => readableToken(item))
+    .filter(Boolean);
+  const extra = readableToken(fallback);
+  if (names.length === 0) return extra || "—";
   return names.join(", ");
 }
 
@@ -38,7 +50,7 @@ export function IdCell({
 }: {
   value: string | number | null | undefined;
 }) {
-  const text = dash(value);
+  const text = dash(readableToken(value));
   return (
     <span className="smp-id-cell" title={text === "—" ? undefined : text}>
       {text}
@@ -92,8 +104,10 @@ export function GroupsCell({
   group?: string;
   groups?: string[];
 }) {
-  const names = (groups ?? []).map((item) => item.trim()).filter(Boolean);
-  const primary = dash(names[0] || group);
+  const names = (groups ?? [])
+    .map((item) => readableToken(item))
+    .filter(Boolean);
+  const primary = dash(names[0] || readableToken(group));
   const extra = Math.max(0, names.length - 1);
   return (
     <span className="smp-groups" title={joinGroups(names, primary)}>
@@ -198,6 +212,7 @@ export function activityFactGroups(row: DailyLogRow): FactGroup[] {
         },
         { label: "Role", value: dash(row.role) },
         { label: "Designation", value: dash(row.designation) },
+        { label: "Live", value: optionalStatus(row.userStatus) },
       ],
     },
     {
@@ -206,9 +221,10 @@ export function activityFactGroups(row: DailyLogRow): FactGroup[] {
         { label: "Date", value: dash(row.date), keep: true },
         { label: "Day", value: optionalStatus(row.status), keep: true },
         { label: "In", value: dash(row.inTime), keep: true },
-        { label: "Out", value: dash(row.outTime), keep: true },
+        { label: "Last screenshot", value: dash(row.outTime), keep: true },
         { label: "Tracked", value: dash(row.trackedTime), keep: true },
         { label: "Manual", value: dash(row.manualTime), keep: true },
+        { label: "Break", value: dash(row.breakTime), keep: true },
         { label: "Clocked in", value: formatInstantMs(row.clockedInMs), keep: true },
       ],
     },
@@ -222,7 +238,7 @@ export function activityFactGroups(row: DailyLogRow): FactGroup[] {
           label: "Screenshot frequency",
           value: row.screenshotFrequency || "—",
         },
-        { label: "Employee ID", value: dash(row.employeeId) },
+        { label: "Employee ID", value: dash(readableToken(row.employeeId)) },
       ],
     },
   ];
@@ -238,7 +254,7 @@ export function memberProfileFacts(
     { label: "Team", value: dash(extras.teamName || member.teamId) },
     { label: "Groups", value: joinGroups(member.groups) },
     { label: "Reports to", value: dash(member.reportsTo) },
-    { label: "Last active", value: dash(member.lastActiveAt) },
+    { label: "Joined", value: dash(member.joinedAt) },
   ].filter((item) => !isEmptyFactValue(item.value));
 }
 
@@ -261,13 +277,13 @@ export function memberFactGroups(
       title: "Activity",
       items: [
         { label: "User status", value: optionalStatus(member.userStatus) },
-        { label: "Last active", value: dash(member.lastActiveAt) },
+        { label: "Joined", value: dash(member.joinedAt) },
         { label: "All-time hours", value: member.allTimeWorkHour || "—" },
         {
           label: "Screenshot frequency",
           value: member.screenshotFrequency || "—",
         },
-        { label: "Employee ID", value: dash(member.employeeId) },
+        { label: "Employee ID", value: dash(readableToken(member.employeeId)) },
       ],
     },
   ];

@@ -2,20 +2,25 @@
 
 import { buildSmoothAreaPath, buildSmoothPath } from "@/components/data/chart-curve";
 import { ChartHoverOverlay } from "@/components/data/ChartHoverOverlay";
-import { pickNearestIndex, useChartWidth } from "@/components/data/useChartWidth";
+import {
+  compactIsoDay,
+  formatAxisValue,
+  niceTicks,
+  tickY,
+} from "@/components/data/chart-axis";
+import { pickNearestIndex } from "@/components/data/useChartWidth";
 import type { TrendMetric, TrendPoint } from "@/lib/api";
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
-const HEIGHT = 148;
-const PAD_LEFT = 20;
-const PAD_RIGHT = 20;
-const PAD_TOP = 28;
+const VIEW_W = 1000;
+const HEIGHT = 168;
+const PAD_LEFT = 12;
+const PAD_RIGHT = 16;
+const PAD_TOP = 16;
 const PAD_BOTTOM = 28;
 
 function formatValue(value: number, metric: TrendMetric): string {
-  if (metric === "present") {
-    return `${Math.round(value)} members`;
-  }
+  if (metric === "present") return `${Math.round(value)} members`;
   if (metric === "attendance" || metric === "occupancy" || metric === "utilization") {
     return `${value.toFixed(1)}%`;
   }
@@ -37,8 +42,12 @@ export function TrendChart({
 }) {
   const gradientId = useId().replace(/:/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
-  const { containerRef, width } = useChartWidth();
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
+  const seriesKey = `${metric}:${points.map((point) => `${point.day}:${point.value}`).join(",")}`;
+  useEffect(() => {
+    setActiveIndex(null);
+  }, [seriesKey]);
 
   const geometry = useMemo(() => {
     if (points.length === 0) return null;
@@ -47,13 +56,19 @@ export function TrendChart({
     const min = Math.min(...values);
     const max = Math.max(...values);
     const percent = isPercentMetric(metric);
-    const paddedMin = percent ? 0 : min - (max - min || 1) * 0.08;
-    const paddedMax = percent ? Math.max(max * 1.15, 5) : max + (max - min || 1) * 0.08;
+    const paddedMin = percent ? 0 : Math.max(0, min - (max - min || 1) * 0.08);
+    const paddedMax = percent ? Math.max(max * 1.08, 5) : max + (max - min || 1) * 0.12;
     const range = paddedMax - paddedMin || 1;
-    const innerW = width - PAD_LEFT - PAD_RIGHT;
+    const innerW = VIEW_W - PAD_LEFT - PAD_RIGHT;
     const innerH = HEIGHT - PAD_TOP - PAD_BOTTOM;
     const step = points.length === 1 ? 0 : innerW / (points.length - 1);
     const baseline = HEIGHT - PAD_BOTTOM;
+    const kind = percent ? "percent" : "count";
+    const yTicks = niceTicks(paddedMin, paddedMax, 4).map((value) => ({
+      value,
+      label: formatAxisValue(value, kind),
+      y: tickY(value, paddedMin, paddedMax, PAD_TOP, innerH),
+    }));
 
     const coords = points.map((point, index) => {
       const x = PAD_LEFT + step * index;
@@ -61,20 +76,23 @@ export function TrendChart({
       return { x, y, label: point.day, value: point.value };
     });
 
-    const line = buildSmoothPath(coords);
-    const area = buildSmoothAreaPath(coords, baseline);
-
     const axisLabels = [
       coords[0],
       coords[Math.floor((coords.length - 1) / 2)],
       coords[coords.length - 1],
     ].filter(
-      (point, index, list) =>
-        list.findIndex((item) => item.label === point.label) === index,
+      (point, index, list) => list.findIndex((item) => item.label === point.label) === index,
     );
 
-    return { coords, line, area, baseline, axisLabels };
-  }, [points, metric, width]);
+    return {
+      coords,
+      line: buildSmoothPath(coords),
+      area: buildSmoothAreaPath(coords, baseline),
+      baseline,
+      axisLabels,
+      yTicks,
+    };
+  }, [points, metric]);
 
   const pickIndex = useCallback(
     (clientX: number) => {
@@ -82,35 +100,45 @@ export function TrendChart({
       const nearest = pickNearestIndex(
         clientX,
         svgRef.current.getBoundingClientRect(),
-        width,
+        VIEW_W,
         geometry.coords.map((point) => point.x),
       );
       setActiveIndex((prev) => (prev === nearest ? prev : nearest));
     },
-    [geometry, width],
+    [geometry],
   );
 
   if (!geometry) {
-    return <p className="smp-muted">No trend data for this period.</p>;
+    return (
+      <div className="smp-chart-wrap" data-empty="true">
+        <p className="smp-chart-empty">No trend data for this period.</p>
+      </div>
+    );
   }
 
-  const active =
-    activeIndex !== null ? geometry.coords[activeIndex] : null;
-  const tooltipX = active
-    ? Math.min(Math.max(active.x, 52), width - 52)
-    : 0;
+  const active = activeIndex !== null ? geometry.coords[activeIndex] : null;
+  const tooltipX = active ? Math.min(Math.max(active.x, 52), VIEW_W - 52) : 0;
 
   return (
-    <div
-      ref={containerRef}
-      className="smp-chart-wrap"
-      onMouseLeave={() => setActiveIndex(null)}
-    >
-      <div className="smp-chart-stage">
+    <div className="smp-chart-wrap smp-chart-wrap--axis" onMouseLeave={() => setActiveIndex(null)}>
+      <div className="smp-chart-plot">
+        <div className="smp-chart-y" aria-hidden="true">
+          {geometry.yTicks.map((tick) => (
+            <span
+              key={`${tick.value}:${tick.label}`}
+              className="smp-chart-y__tick"
+              style={{ top: `${(tick.y / HEIGHT) * 100}%` }}
+            >
+              {tick.label}
+            </span>
+          ))}
+        </div>
+        <div className="smp-chart-stage">
         <svg
           ref={svgRef}
           className="smp-chart smp-chart--minimal smp-chart--interactive"
-          viewBox={`0 0 ${width} ${HEIGHT}`}
+          viewBox={`0 0 ${VIEW_W} ${HEIGHT}`}
+          preserveAspectRatio="none"
           role="img"
           aria-label={`${label} trend`}
           onMouseMove={(event) => pickIndex(event.clientX)}
@@ -125,18 +153,24 @@ export function TrendChart({
               <stop offset="100%" stopColor="var(--smp-accent)" stopOpacity="0" />
             </linearGradient>
           </defs>
+          {geometry.yTicks.map((tick) => (
+            <line
+              key={`grid-${tick.value}`}
+              className="smp-chart__grid"
+              x1={PAD_LEFT}
+              x2={VIEW_W - PAD_RIGHT}
+              y1={tick.y}
+              y2={tick.y}
+            />
+          ))}
           <line
             className="smp-chart__baseline"
             x1={PAD_LEFT}
-            x2={width - PAD_RIGHT}
+            x2={VIEW_W - PAD_RIGHT}
             y1={geometry.baseline}
             y2={geometry.baseline}
           />
-          <path
-            className="smp-chart__area"
-            d={geometry.area}
-            fill={`url(#${gradientId})`}
-          />
+          <path className="smp-chart__area" d={geometry.area} fill={`url(#${gradientId})`} />
           <path className="smp-chart__line" d={geometry.line} />
           {geometry.axisLabels.map((point) => (
             <text
@@ -146,13 +180,13 @@ export function TrendChart({
               y={HEIGHT - 8}
               textAnchor="middle"
             >
-              {point.label}
+              {compactIsoDay(point.label)}
             </text>
           ))}
         </svg>
         {active ? (
           <ChartHoverOverlay
-            width={width}
+            width={VIEW_W}
             height={HEIGHT}
             padTop={PAD_TOP}
             padBottom={PAD_BOTTOM}
@@ -160,20 +194,18 @@ export function TrendChart({
             y={active.y}
           />
         ) : null}
-      </div>
-      {active ? (
-        <div
-          className="smp-chart-tooltip smp-chart-tooltip--smooth"
-          style={{ left: `${(tooltipX / width) * 100}%` }}
-        >
-          <span className="smp-chart-tooltip__date">{active.label}</span>
-          <span className="smp-chart-tooltip__value">
-            {formatValue(active.value, metric)}
-          </span>
+        {active ? (
+          <div
+            className="smp-chart-tooltip smp-chart-tooltip--smooth"
+            style={{ left: `${(tooltipX / VIEW_W) * 100}%` }}
+          >
+            <span className="smp-chart-tooltip__date">{active.label}</span>
+            <span className="smp-chart-tooltip__value">{formatValue(active.value, metric)}</span>
+          </div>
+        ) : null}
         </div>
-      ) : (
-        <p className="smp-chart-hint">Hover the line to inspect each day</p>
-      )}
+      </div>
+      <p className="smp-chart-hint">Hover the line to inspect each day</p>
     </div>
   );
 }

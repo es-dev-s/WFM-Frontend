@@ -26,7 +26,7 @@ export default function BiomaticLogPage() {
     <div className="smp-page-stack smp-page-stack--fill smp-record">
       <PageMeta
         crumbs={[
-          { label: "Biomatic", href: "/biomatic" },
+          { label: "Biometrics", href: "/biomatic" },
           { label: "Daily logs", href: "/biomatic" },
           { label: row?.name || "Log" },
         ]}

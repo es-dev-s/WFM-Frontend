@@ -26,7 +26,7 @@ export const metadata: Metadata = {
     default: "WFM — Workforce",
     template: "%s · WFM",
   },
-  description: "Workforce operations for Tivazo and Biomatic.",
+  description: "Workforce operations for Tivazo and Biometrics.",
 };
 
 export const viewport: Viewport = {

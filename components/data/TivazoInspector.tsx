@@ -144,8 +144,13 @@ export function TivazoInspector({
                             {row.outTime}
                           </span>
                           <span className="smp-inspector__sub">
-                            {row.employeeId || "—"}
-                            {row.group && row.group !== "—"
+                            {row.employeeId &&
+                            !/^[0-9a-f-]{36}$/i.test(row.employeeId)
+                              ? row.employeeId
+                              : "—"}
+                            {row.group &&
+                            row.group !== "—" &&
+                            !/^[0-9a-f-]{36}$/i.test(row.group)
                               ? ` · ${row.group}`
                               : ""}
                           </span>
@@ -183,7 +188,8 @@ export function TivazoInspector({
                   />
                   <div className="smp-inspector__chips">
                     <StatusPill value={detail.status} />
-                    {detail.employeeId ? (
+                    {detail.employeeId &&
+                    !/^[0-9a-f-]{36}$/i.test(detail.employeeId) ? (
                       <span className="smp-id-cell">{detail.employeeId}</span>
                     ) : null}
                   </div>

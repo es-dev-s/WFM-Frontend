@@ -6,5 +6,6 @@
 @import "./styles/data.css";
 @import "./styles/filters.css";
 @import "./styles/glass.css";
+@import "./styles/auth.css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));

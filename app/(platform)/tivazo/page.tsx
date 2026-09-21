@@ -3,27 +3,27 @@
 import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { FilterSearch } from "@/components/ui/FilterSearch";
 import { FilterSelect } from "@/components/ui/FilterSelect";
-import { TIVAZO_ACTIVITY_COLUMNS } from "@/components/data/activity-columns";
+import {
+  TIVAZO_ACTIVITY_COLUMNS,
+  TIVAZO_GROUP_COLUMNS,
+} from "@/components/data/activity-columns";
 import { ControlBar } from "@/components/data/ControlBar";
 import { DataTable } from "@/components/data/DataTable";
 import { QueryState } from "@/components/data/QueryState";
-import { TivazoStatCards } from "@/components/data/TivazoStatCards";
+import { TivazoStatCards, type TivazoCardId } from "@/components/data/TivazoStatCards";
 import { TivazoInspector } from "@/components/data/TivazoInspector";
-import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useMenu } from "@/hooks/use-menu";
 import {
   type DailyLogRow,
   type TivazoActivitiesPage,
   type TivazoGroupsResponse,
-  type TivazoSummary,
-  useInfinitePage,
   useQuery,
   withQuery,
 } from "@/lib/api";
 import { isoDateInZone } from "@/lib/datetime";
-import { useCallback, useEffect, useMemo, useState } from "react";
-
-const PAGE_SIZE = 50;
+import { filterTivazoRows, summaryFromTivazoRows, matchesPerson } from "@/lib/list-scope";
+import { normalizeDayStatus } from "@/lib/server/metrics";
+import { useEffect, useMemo, useState } from "react";
 
 type Inspector =
   | { view: "present" }
@@ -39,17 +39,39 @@ export default function TivazoPage() {
   const [endDate, setEndDate] = useState(today);
   const [group, setGroup] = useState("");
   const [query, setQuery] = useState("");
+  const [memberId, setMemberId] = useState("");
+  const [emailScope, setEmailScope] = useState<string[]>([]);
+  const [card, setCard] = useState<TivazoCardId>("totalMembers");
   const [inspector, setInspector] = useState<Inspector | null>(null);
-  const debouncedQuery = useDebouncedValue(query);
 
   useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("group");
-    if (fromUrl) setGroup(fromUrl);
+    const params = new URLSearchParams(window.location.search);
+    const fromGroup = params.get("group");
+    const member = params.get("memberId") || "";
+    const emails = (params.get("emails") || "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const view = params.get("view") || "";
+    const start = params.get("startDate") || "";
+    const end = params.get("endDate") || "";
+    if (fromGroup) setGroup((current) => current || fromGroup);
+    if (member) setMemberId(member);
+    if (emails.length) setEmailScope(emails);
+    if (start) setStartDate(start);
+    if (end) setEndDate(end);
+    if (view === "present") setCard("presentMembers");
+    else if (view === "absent") setCard("absentMembers");
+    else if (view === "active") setCard("activeMembers");
+    else if (view === "idle") setCard("idleMembers");
+    else if (view === "offline") setCard("offlineMembers");
+    else if (view === "teams") setCard("teams");
+    else if (view === "total" || view === "members") setCard("totalMembers");
   }, []);
 
   useEffect(() => {
     setInspector(null);
-  }, [startDate, endDate, group, debouncedQuery]);
+  }, [startDate, endDate, group, query]);
 
   const inspectorOpen = inspector !== null;
   const { menuId, rootRef } = useMenu({
@@ -57,63 +79,78 @@ export default function TivazoPage() {
     onClose: () => setInspector(null),
   });
 
-  const listParams = useMemo(
-    () => ({
-      startDate,
-      endDate,
-      group: group || undefined,
-      q: debouncedQuery || undefined,
-    }),
-    [startDate, endDate, group, debouncedQuery],
+  const peopleStatus =
+    card === "presentMembers"
+      ? "Present"
+      : card === "absentMembers"
+        ? "Absent"
+        : card === "activeMembers"
+          ? "active"
+          : card === "idleMembers"
+            ? "idle"
+            : card === "offlineMembers"
+              ? "offline"
+              : undefined;
+  const showTeams = card === "teams";
+
+  const groups = useQuery<TivazoGroupsResponse>(
+    withQuery("/tivazo/groups", { startDate, endDate }),
+  );
+  const activities = useQuery<TivazoActivitiesPage>(
+    withQuery("/tivazo/activities", { startDate, endDate, all: 1 }),
   );
 
-  const filterKey = withQuery("/tivazo/activities", listParams);
-  const buildListUrl = useCallback(
-    (offset: number) =>
-      withQuery("/tivazo/activities", {
-        ...listParams,
-        limit: PAGE_SIZE,
-        offset,
-      }),
-    [listParams],
+  const catalog = useMemo(() => {
+    return [...(groups.data?.groups ?? [])].sort((left, right) =>
+      left.label.localeCompare(right.label, undefined, { sensitivity: "base" }),
+    );
+  }, [groups.data?.groups]);
+  const peopleScope = useMemo(
+    () => ({ memberId, emails: emailScope }),
+    [memberId, emailScope],
   );
-
-  const groups = useQuery<TivazoGroupsResponse>("/tivazo/groups");
-  const summaryKey = withQuery("/tivazo/summary", listParams);
-  const summary = useQuery<TivazoSummary>(summaryKey);
-  const page = useInfinitePage<DailyLogRow, TivazoActivitiesPage>(
-    filterKey,
-    buildListUrl,
-    rowKey,
+  const scopedRows = useMemo(
+    () => filterTivazoRows(activities.data?.items ?? [], group, query, undefined, catalog, peopleScope),
+    [activities.data?.items, group, query, catalog, peopleScope],
   );
-
-  const keepPresent =
-    inspector?.view === "present" ||
-    (inspector?.view === "detail" && inspector.fromPresent);
-  const presentKey = keepPresent
-    ? withQuery("/tivazo/activities", { ...listParams, status: "Present" })
-    : null;
-  const buildPresentUrl = useCallback(
-    (offset: number) =>
-      withQuery("/tivazo/activities", {
-        ...listParams,
-        status: "Present",
-        limit: PAGE_SIZE,
-        offset,
-      }),
-    [listParams],
+  useEffect(() => {
+    if (!memberId) return;
+    const row = scopedRows.find((item) => matchesPerson(item, memberId));
+    if (!row) return;
+    setInspector({ view: "detail", row, fromPresent: false });
+  }, [memberId, scopedRows]);
+  const items = useMemo(
+    () => filterTivazoRows(scopedRows, "", "", peopleStatus, catalog),
+    [scopedRows, peopleStatus, catalog],
   );
-  const present = useInfinitePage<DailyLogRow, TivazoActivitiesPage>(
-    presentKey,
-    buildPresentUrl,
-    rowKey,
+  const summary = useMemo(() => summaryFromTivazoRows(scopedRows), [scopedRows]);
+  const presentRows = useMemo(
+    () => scopedRows.filter((row) => normalizeDayStatus(row.status) === "Present"),
+    [scopedRows],
   );
-
-  const items = page.items;
-  const total = page.total;
-  const catalog = groups.data?.groups ?? [];
-  const presentRows = present.items;
-  const presentCount = String(page.data?.present ?? present.data?.total ?? "—");
+  const total = items.length;
+  const teamRows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return catalog;
+    return catalog.filter(
+      (item) =>
+        item.label.toLowerCase().includes(needle) ||
+        item.id.toLowerCase().includes(needle),
+    );
+  }, [catalog, query]);
+  const tableEmpty =
+    card === "presentMembers"
+      ? "No present people for this range."
+      : card === "absentMembers"
+        ? "No absent people for this range."
+        : card === "activeMembers"
+          ? "No active people right now."
+          : card === "idleMembers"
+            ? "No idle people right now."
+            : card === "offlineMembers"
+              ? "No offline people for this range."
+              : "No Tivazo activity for this range.";
+  const presentCount = String(summary.presentMembers || presentRows.length || "—");
   const selectedRow = inspector?.view === "detail" ? inspector.row : null;
 
   return (
@@ -123,13 +160,21 @@ export default function TivazoPage() {
       data-inspector={inspectorOpen ? "true" : "false"}
     >
       <div className="smp-stage">
-        {summary.data ? (
-          <TivazoStatCards summary={summary.data} />
+        {activities.data ? (
+          <TivazoStatCards
+            summary={summary}
+            teams={catalog.length}
+            selected={card}
+            onSelect={(next) => {
+              setInspector(null);
+              setCard((current) => (current === next ? "totalMembers" : next));
+            }}
+          />
         ) : (
           <QueryState
-            loading={summary.loading}
-            error={summary.error}
-            onRetry={summary.reload}
+            loading={activities.loading}
+            error={activities.error}
+            onRetry={activities.reload}
             label="Tivazo summary"
           />
         )}
@@ -138,15 +183,30 @@ export default function TivazoPage() {
           stats={[
             {
               label: "Present",
-              value: String(page.data?.present ?? "—"),
+              value: String(summary.presentMembers || "—"),
               onClick: () =>
-                setInspector((current) =>
-                  current?.view === "present" ? null : { view: "present" },
+                setCard((current) =>
+                  current === "presentMembers" ? "totalMembers" : "presentMembers",
                 ),
-              active: inspector?.view === "present",
+              active: card === "presentMembers",
             },
-            { label: "Absent", value: String(page.data?.absent ?? "—") },
-            { label: "Records", value: String(total || "—") },
+            {
+              label: "Teams",
+              value: String(catalog.length),
+              onClick: () =>
+                setCard((current) => (current === "teams" ? "totalMembers" : "teams")),
+              active: showTeams,
+            },
+            {
+              label: "Absent",
+              value: String(summary.absentMembers || "—"),
+              onClick: () =>
+                setCard((current) =>
+                  current === "absentMembers" ? "totalMembers" : "absentMembers",
+                ),
+              active: card === "absentMembers",
+            },
+            { label: "Records", value: String(showTeams ? teamRows.length : total || "—") },
           ]}
         >
           <div className="smp-filters--inline">
@@ -164,21 +224,48 @@ export default function TivazoPage() {
               value={group}
               allLabel="All groups"
               options={catalog}
+              searchable
               onChange={setGroup}
             />
             <FilterSearch
               value={query}
               onChange={setQuery}
-              placeholder="Name, email, group"
+              placeholder={showTeams ? "Team name" : "Name, email, group"}
             />
           </div>
         </ControlBar>
 
-        {page.error && items.length === 0 ? (
+        {showTeams ? (
+          groups.error && teamRows.length === 0 ? (
+            <QueryState
+              loading={false}
+              error={groups.error}
+              onRetry={groups.reload}
+              label="Tivazo teams"
+            />
+          ) : (
+            <DataTable
+              columns={TIVAZO_GROUP_COLUMNS}
+              rows={teamRows}
+              getKey={(row) => row.id}
+              resetKey={`${startDate}:${endDate}:${query}`}
+              totalCount={teamRows.length}
+              empty={
+                groups.loading ? "Loading Tivazo teams…" : "No teams match these filters."
+              }
+              refreshing={groups.loading || groups.refreshing}
+              onRowClick={(row) => {
+                setGroup(row.id);
+                setCard("totalMembers");
+                setQuery("");
+              }}
+            />
+          )
+        ) : activities.error && items.length === 0 ? (
           <QueryState
             loading={false}
-            error={page.error}
-            onRetry={page.reload}
+            error={activities.error}
+            onRetry={activities.reload}
             label="Tivazo activity"
           />
         ) : (
@@ -187,17 +274,10 @@ export default function TivazoPage() {
             rows={items}
             getKey={rowKey}
             selectedKey={selectedRow?.id ?? null}
-            resetKey={filterKey}
-            hasMore={page.hasMore}
-            loadingMore={page.loadingMore}
+            resetKey={`${startDate}:${endDate}:${group}:${query}:${card}`}
             totalCount={total}
-            onNearEnd={page.loadMore}
-            empty={
-              page.loading
-                ? "Loading Tivazo activity…"
-                : "No Tivazo activity for this range."
-            }
-            refreshing={page.loading || page.refreshing}
+            empty={activities.loading ? "Loading Tivazo activity…" : tableEmpty}
+            refreshing={activities.loading || activities.refreshing}
             onRowClick={(row) =>
               setInspector((current) =>
                 current?.view === "detail" && current.row.id === row.id
@@ -216,20 +296,13 @@ export default function TivazoPage() {
         count={presentCount}
         rows={presentRows}
         detail={selectedRow}
-        loading={
-          inspector?.view === "present"
-            ? present.loading && presentRows.length === 0
-            : false
-        }
-        loadingMore={present.loadingMore}
-        hasMore={present.hasMore}
-        onNearEnd={present.loadMore}
+        loading={inspector?.view === "present" ? activities.loading && presentRows.length === 0 : false}
         error={
           inspector?.view === "present" && presentRows.length === 0
-            ? present.error
+            ? activities.error
             : null
         }
-        onRetry={present.reload}
+        onRetry={activities.reload}
         onClose={() => setInspector(null)}
         onBack={
           inspector?.view === "detail" && inspector.fromPresent

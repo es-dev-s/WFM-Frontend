@@ -19,8 +19,10 @@ export default function BiomaticTeamPage() {
   const params = useParams();
   const router = useRouter();
   const id = readParamId(params.id as string | string[] | undefined);
-  const team = useQuery<Team>(id ? `/teams/${id}` : null);
-  const people = useQuery<Member[]>(id ? `/teams/${id}/members` : null);
+  const team = useQuery<Team>(id ? `/teams/${encodeURIComponent(id)}` : null);
+  const people = useQuery<Member[]>(
+    id ? `/teams/${encodeURIComponent(id)}/members` : null,
+  );
   const rows: MemberDirectoryRow[] = useMemo(
     () =>
       (people.data ?? []).map((member) => ({
@@ -34,7 +36,7 @@ export default function BiomaticTeamPage() {
     <div className="smp-page-stack smp-page-stack--fill smp-record">
       <PageMeta
         crumbs={[
-          { label: "Biomatic", href: "/biomatic" },
+          { label: "Biometrics", href: "/biomatic" },
           { label: "Teams", href: "/biomatic" },
           { label: team.data?.name || "Team" },
         ]}

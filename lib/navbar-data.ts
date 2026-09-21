@@ -3,8 +3,8 @@ import {
   CircleHelp,
   LogOut,
   Settings,
-  Shield,
   UserRound,
+  Users,
 } from "lucide-react";
 
 export type NotificationItem = {
@@ -22,6 +22,7 @@ export type ProfileAction = {
   href?: string;
   icon: LucideIcon;
   tone?: "default" | "danger";
+  wfmOnly?: boolean;
 };
 
 export const CURRENT_USER = {
@@ -71,11 +72,12 @@ export const PROFILE_ACTIONS: ProfileAction[] = [
     icon: Settings,
   },
   {
-    id: "privacy",
-    label: "Privacy & access",
-    description: "Roles and permissions",
-    href: "/settings",
-    icon: Shield,
+    id: "users",
+    label: "Users",
+    description: "Team leads and assignments",
+    href: "/users",
+    icon: Users,
+    wfmOnly: true,
   },
   {
     id: "help",

@@ -17,6 +17,7 @@ export function ChartHoverOverlay({
   x,
   y,
 }: ChartHoverOverlayProps) {
+  if (!width || !height) return null;
   const xPct = (x / width) * 100;
   const yPct = (y / height) * 100;
   const crosshairTop = (padTop / height) * 100;

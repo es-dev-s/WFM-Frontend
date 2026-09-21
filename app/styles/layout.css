@@ -25,7 +25,7 @@
   .smp-shell,
   .smp-sidebar,
   .smp-overlay,
-  .smp-sidebar__brand-face,
+  .smp-sidebar__collapse,
   .smp-sidebar__group-label,
   .smp-sidebar__group + .smp-sidebar__group,
   .smp-sidebar__nav,
@@ -73,6 +73,7 @@
 .smp-sidebar__brand {
   display: flex;
   align-items: center;
+  gap: 10px;
   height: var(--smp-navbar-height);
   padding: 0 var(--smp-sidebar-rail-pad);
   flex-shrink: 0;
@@ -81,7 +82,6 @@
 }
 
 .smp-sidebar__brand-control {
-  position: relative;
   display: grid;
   place-items: center;
   width: var(--smp-sidebar-icon);
@@ -91,6 +91,11 @@
   background: var(--smp-accent);
   color: var(--smp-accent-on);
   transition: background-color var(--smp-duration-fast) var(--smp-ease-out);
+}
+
+.smp-sidebar__brand-control svg {
+  width: 18px;
+  height: 18px;
 }
 
 .smp-sidebar__brand-control:hover {
@@ -106,43 +111,32 @@
   outline-offset: 2px;
 }
 
-.smp-sidebar__brand-face {
-  position: absolute;
-  inset: 0;
+.smp-sidebar__collapse {
   display: grid;
   place-items: center;
-  transition: opacity var(--smp-duration-fast) var(--smp-ease-out);
-}
-
-.smp-sidebar__brand-face svg {
-  width: 18px;
-  height: 18px;
-}
-
-.smp-sidebar__brand-face--mark {
-  opacity: 1;
-}
-
-.smp-sidebar__brand-face--action {
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  margin-right: 2px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: var(--smp-ink-tertiary);
   opacity: 0;
-}
-
-.smp-sidebar__brand-control:hover .smp-sidebar__brand-face--mark,
-.smp-sidebar__brand-control:focus-visible .smp-sidebar__brand-face--mark {
-  opacity: 0;
-}
-
-.smp-sidebar__brand-control:hover .smp-sidebar__brand-face--action,
-.smp-sidebar__brand-control:focus-visible .smp-sidebar__brand-face--action {
-  opacity: 1;
-}
-
-.smp-sidebar__brand-spacer {
-  flex: 0 1 10px;
-  width: 10px;
-  min-width: 0;
-  height: 1px;
   pointer-events: none;
+  transition:
+    background-color var(--smp-duration-fast) var(--smp-ease-out),
+    color var(--smp-duration-fast) var(--smp-ease-out),
+    opacity var(--smp-sidebar-duration) var(--smp-sidebar-ease);
+}
+
+.smp-sidebar__collapse:hover {
+  background: var(--smp-hover);
+  color: var(--smp-ink-primary);
+}
+
+.smp-sidebar__collapse:focus-visible {
+  outline: 2px solid var(--smp-focus-ring);
+  outline-offset: 2px;
 }
 
 .smp-sidebar__brand-copy {
@@ -174,6 +168,71 @@
   white-space: nowrap;
 }
 
+.smp-sidebar__account {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: var(--smp-sidebar-icon);
+  min-height: var(--smp-sidebar-icon);
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--smp-radius-sm);
+  color: var(--smp-ink-secondary);
+  transition:
+    background-color var(--smp-duration-fast) var(--smp-ease-out),
+    color var(--smp-duration-fast) var(--smp-ease-out);
+}
+
+.smp-sidebar__account:hover {
+  background: var(--smp-hover);
+  color: var(--smp-ink-primary);
+}
+
+.smp-sidebar__avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-inline: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--smp-ink);
+  color: var(--smp-ink-inverse);
+  font-size: 10px;
+  font-weight: var(--smp-weight-semibold);
+  letter-spacing: 0.03em;
+}
+
+.smp-sidebar__account-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.smp-sidebar__account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: var(--smp-weight-semibold);
+  color: var(--smp-ink-primary);
+  line-height: 1.2;
+}
+
+.smp-sidebar__account-role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--smp-ink-tertiary);
+  line-height: 1.2;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Nav scroll — 16px rail pad keeps the 40px icon column optically centered   */
 /* -------------------------------------------------------------------------- */
@@ -186,9 +245,13 @@
 }
 
 .smp-sidebar__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   flex-shrink: 0;
-  padding: var(--smp-space-3) var(--smp-sidebar-rail-pad);
+  padding: 10px var(--smp-sidebar-rail-pad) var(--smp-space-3);
   overflow: visible;
+  border-top: 1px solid var(--smp-border);
 }
 
 .smp-sidebar__group {
@@ -327,6 +390,19 @@
 .smp-nav-item[data-active="true"] {
   background: var(--smp-accent-muted);
   color: var(--smp-accent);
+  font-weight: var(--smp-weight-semibold);
+}
+
+.smp-nav-item[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  z-index: 2;
 }
 
 .smp-nav-item[data-active="true"]:hover {
@@ -419,6 +495,19 @@
     box-shadow: var(--smp-sidebar-shadow-open);
   }
 
+  .smp-shell[data-sidebar-collapsed="false"] .smp-sidebar__collapse {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .smp-shell[data-sidebar-collapsed="false"] .smp-sidebar__brand-control {
+    pointer-events: none;
+  }
+
+  .smp-shell[data-sidebar-collapsed="false"] .smp-nav-item {
+    padding-right: 8px;
+  }
+
   .smp-shell[data-sidebar-collapsed="false"] .smp-nav-item__dot,
   .smp-shell[data-sidebar-collapsed="false"] .smp-nav-item__tooltip {
     display: none;
@@ -447,7 +536,7 @@
   }
 
   .smp-shell[data-sidebar-collapsed="false"] .smp-sidebar__nav {
-    gap: 4px;
+    gap: 2px;
   }
 
   /* Icon rail — hover/selected sit inset so the pill has a little air */
@@ -1126,23 +1215,13 @@ html[data-theme="dark"] .smp-theme-toggle__icon--sun {
     display: none;
   }
 
-  /* On mobile, brand control keeps the platform mark (no collapse swap) */
-  .smp-sidebar__brand-face--mark {
-    opacity: 1;
+  /* On mobile, brand mark is identity only — drawer closes from the overlay */
+  .smp-sidebar__collapse {
+    display: none;
   }
 
-  .smp-sidebar__brand-face--action {
-    opacity: 0;
-  }
-
-  .smp-sidebar__brand-control:hover .smp-sidebar__brand-face--mark,
-  .smp-sidebar__brand-control:focus-visible .smp-sidebar__brand-face--mark {
-    opacity: 1;
-  }
-
-  .smp-sidebar__brand-control:hover .smp-sidebar__brand-face--action,
-  .smp-sidebar__brand-control:focus-visible .smp-sidebar__brand-face--action {
-    opacity: 0;
+  .smp-sidebar__account {
+    padding-right: 8px;
   }
 
   .smp-navbar {

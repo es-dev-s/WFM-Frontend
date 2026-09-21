@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AuthRole } from "@/lib/auth-role";
 
+export type { AuthRole } from "@/lib/auth-role";
+export { authRoleLabel, isOrgWideAuthRole, isScopedAuthRole } from "@/lib/auth-role";
 export const API_PREFIX = "/api/v1";
 
 export type ApiErrorBody = {
@@ -22,12 +25,169 @@ export class ApiError extends Error {
   }
 }
 
+function readApiError(body: unknown, fallback: string): { code: string; message: string } {
+  if (!body || typeof body !== "object") {
+    return { code: "http_error", message: fallback };
+  }
+  const record = body as Record<string, unknown>;
+  const nested = record.error;
+  if (nested && typeof nested === "object") {
+    const detail = nested as Record<string, unknown>;
+    return {
+      code: String(detail.code || record.code || "http_error"),
+      message: String(detail.message || record.message || fallback),
+    };
+  }
+  if (typeof nested === "string" && nested) {
+    return { code: nested, message: String(record.message || fallback) };
+  }
+  return {
+    code: String(record.code || "http_error"),
+    message: String(record.message || fallback),
+  };
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error ? String(error.name) : "";
+  return name === "AbortError";
+}
+
+function redirectIfSignedOut(status: number, path: string) {
+  if (status !== 401) return;
+  if (typeof window === "undefined") return;
+  if (window.location.pathname.startsWith("/login")) return;
+  if (path.includes("/auth/login")) return;
+  const next = window.location.pathname + window.location.search;
+  window.location.href = `/login?next=${encodeURIComponent(next || "/")}`;
+}
+
+export async function apiGet<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const url = path.startsWith("http")
+    ? path
+    : `${API_PREFIX}${path.startsWith("/") ? path : `/${path}`}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...init?.headers,
+      },
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    throw new ApiError(
+      0,
+      "network_error",
+      "Can’t reach Bio or Tivazo. Confirm the Go servers are running on ports 8091 and 8090.",
+    );
+  }
+
+  if (response.status === 499) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  if (!response.ok) {
+    redirectIfSignedOut(response.status, url);
+    let parsed: unknown = null;
+    try {
+      parsed = await response.json();
+    } catch {
+      parsed = null;
+    }
+    const { code, message } = readApiError(
+      parsed,
+      response.statusText || "Request failed",
+    );
+    if (response.status === 502 || response.status === 504 || code === "network_error") {
+      throw new ApiError(
+        response.status,
+        "network_error",
+        message ||
+          "Can’t reach Bio or Tivazo. Confirm the Go servers are running on ports 8091 and 8090.",
+      );
+    }
+    throw new ApiError(response.status, code, message);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function apiSend<T>(
+  path: string,
+  method: "POST" | "PATCH" | "DELETE",
+  body?: unknown,
+): Promise<T> {
+  const url = path.startsWith("http")
+    ? path
+    : `${API_PREFIX}${path.startsWith("/") ? path : `/${path}`}`;
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    redirectIfSignedOut(response.status, url);
+    let parsed: unknown = null;
+    try {
+      parsed = await response.json();
+    } catch {
+      parsed = null;
+    }
+    const { code, message } = readApiError(
+      parsed,
+      response.statusText || "Request failed",
+    );
+    throw new ApiError(response.status, code, message);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
 export type HealthResponse = {
   status: "ok" | "degraded" | "down";
   service: string;
   version: string;
   uptimeMs: number;
   timestamp: string;
+};
+
+export type TeamAssignment = {
+  source: "tivazo" | "biometrics";
+  teamId: string;
+  teamLabel: string;
+};
+
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: AuthRole;
+  roleLabel: string;
+  initials: string;
+  assignments: TeamAssignment[];
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: AuthRole;
+  status: "active" | "disabled";
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  assignments: TeamAssignment[];
 };
 
 export type MetricCard = {
@@ -46,7 +206,71 @@ export type DashboardSummary = {
   biomaticMembers: number;
   tivazoMembers: number;
   avgWorkHours: string;
-  avgBreakTime: string;
+  avgClockIn: string;
+  avgAttendance: string;
+  biomaticPresent: number;
+};
+
+export type DashboardMemberFocus = {
+  name: string;
+  email: string;
+  employeeId: string;
+  sources: string[];
+  biometrics: {
+    day: string;
+    inTime: string;
+    outTime: string;
+    department: string;
+    designation: string;
+    joined: string;
+  };
+  tivazo: {
+    live: string;
+    day: string;
+    inTime: string;
+    outTime: string;
+    tracked: string;
+    group: string;
+    designation: string;
+  };
+};
+
+export type CoveragePerson = {
+  id: string;
+  name: string;
+  email: string;
+  team: string;
+  status: string;
+  match: "email" | "none";
+};
+
+export type CoverageGaps = {
+  linked: number;
+  bioOnly: CoveragePerson[];
+  tivazoOnly: CoveragePerson[];
+  scope: string;
+  teamId: string;
+  memberId: string;
+};
+
+export type DashboardRosterPerson = {
+  source: "bio" | "tivazo";
+  id: string;
+  email: string;
+  name: string;
+  teams: string[];
+  department: string;
+  groups: string[];
+  attendance: string;
+  status: string;
+  startTime: string;
+  endTime: string;
+  clockedIn: string;
+  lastScreenshot: string;
+  trackedSeconds: number;
+  trackedLabel: string;
+  designation: string;
+  joinDate: string;
 };
 
 export type DashboardOverview = {
@@ -54,21 +278,70 @@ export type DashboardOverview = {
   filters: FilterOptions;
   trend: TrendPoint[];
   leaderboard: Leaderboard;
-  hourly: HourlyPoint[];
+  hourly: {
+    biometrics: HourlySeries;
+    tivazo: HourlySeries;
+    compare: PunchCompare;
+  };
+  leaderboards?: Partial<Record<TrendMetric, Leaderboard>>;
+  member: DashboardMemberFocus | null;
   biomatic: BiomaticSummary;
   tivazo: TivazoSummary;
+  coverage: CoverageGaps;
+  roster?: {
+    bio: DashboardRosterPerson[];
+    tivazo: DashboardRosterPerson[];
+  };
 };
 
 export type TrendPoint = {
   day: string;
   value: number;
+  clockIns?: number;
+  trackedSeconds?: number;
 };
 
 export type HourlyPoint = {
   hour: number;
   label: string;
   value: number;
+  share?: number;
+  exact?: string;
+  bio?: number;
+  tivazo?: number;
 };
+
+export type HourlySeries = {
+  avgClockIn: string;
+  people: number;
+  points: HourlyPoint[];
+};
+
+export type PunchMoment = {
+  time: string;
+  people: number;
+};
+
+export type PunchGap = {
+  label: string;
+  minutes: number | null;
+  people: number;
+  note: string;
+};
+
+export type PunchLane = {
+  first: PunchMoment;
+  second: PunchMoment;
+  gap: PunchGap;
+  overall: PunchMoment;
+};
+
+export type PunchCompare = {
+  checkIn: PunchLane;
+  checkOut: PunchLane;
+};
+
+export type ClockSource = "biometrics" | "tivazo";
 
 export type TrendMetric =
   | "present"
@@ -80,7 +353,9 @@ export type TrendMetric =
 export type LeaderRow = {
   id: string;
   name: string;
+  email: string;
   team: string;
+  status: string;
   value: string;
   delta: string;
   positive: boolean;
@@ -89,7 +364,9 @@ export type LeaderRow = {
 export type AttentionItem = {
   id: string;
   name: string;
+  email: string;
   team: string;
+  status: string;
   reason: string;
   value: string;
 };
@@ -108,6 +385,7 @@ export type FilterOptions = {
   teams: FilterOption[];
   supervisors: FilterOption[];
   roles: FilterOption[];
+  members: FilterOption[];
 };
 
 export type TeamComposition = {
@@ -150,11 +428,13 @@ export type Member = {
   attendance: string;
   status: string;
   dayStatus: string;
+  inTime?: string;
   workspaceId: string;
   groups: string[];
   allTimeWorkHour: number;
   screenshotFrequency: number;
   lastActiveAt: string;
+  joinedAt: string;
   avatarUrl: string;
   composition: MemberComposition;
 };
@@ -181,6 +461,7 @@ export type DailyLogRow = {
   outTime: string;
   trackedTime: string;
   manualTime: string;
+  breakTime: string;
   occupancy: string;
   utilization: string;
   wtr: string;
@@ -212,6 +493,7 @@ export type BiomaticSummary = {
   totalMembers: number;
   presentMembers: number;
   absentMembers: number;
+  leaveMembers: number;
   lateMembers: number;
 };
 
@@ -223,8 +505,8 @@ export type TivazoSummary = {
   totalMembers: number;
   activeMembers: number;
   idleMembers: number;
-  breakMembers: number;
-  lateMembers: number;
+  offlineMembers: number;
+  presentMembers: number;
   absentMembers: number;
   avgWorkHours: string;
 };
@@ -270,115 +552,6 @@ export type MemberDetail = {
   dailyEntries: DailyEntry[];
 };
 
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const name = "name" in error ? String(error.name) : "";
-  return name === "AbortError";
-}
-
-let dbChain: Promise<unknown> = Promise.resolve();
-
-function enqueueDb<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  const next = dbChain.then(async () => {
-    if (signal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
-    }
-    return task();
-  });
-  dbChain = next.then(
-    () => undefined,
-    () => undefined,
-  );
-  return next;
-}
-
-function shouldSerialize(path: string): boolean {
-  const bare = path.split("?")[0];
-  return (
-    bare.startsWith("/dashboard") ||
-    bare.startsWith("/biomatic") ||
-    bare === "/teams" ||
-    bare.startsWith("/teams/") ||
-    bare === "/members" ||
-    bare.startsWith("/members/") ||
-    bare === "/daily-logs" ||
-    bare === "/filters"
-  );
-}
-
-export async function apiGet<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const url = path.startsWith("http")
-    ? path
-    : `${API_PREFIX}${path.startsWith("/") ? path : `/${path}`}`;
-
-  const execute = async () => {
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        ...init,
-        headers: {
-          Accept: "application/json",
-          ...init?.headers,
-        },
-        cache: "no-store",
-      });
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      throw new ApiError(
-        0,
-        "network_error",
-        "Can’t reach the API. Confirm the Go server is running on port 18780.",
-      );
-    }
-
-    if (response.status === 502 || response.status === 504) {
-      throw new ApiError(
-        response.status,
-        "network_error",
-        "Can’t reach the API. Confirm the Go server is running on port 18780.",
-      );
-    }
-
-    if (!response.ok) {
-      let code = "http_error";
-      let message = response.statusText || "Request failed";
-      let parsed = false;
-      try {
-        const body = (await response.json()) as ApiErrorBody;
-        parsed = true;
-        if (body.error) code = body.error;
-        if (body.message) message = body.message;
-      } catch {
-        /* ignore non-JSON error bodies */
-      }
-      if (!parsed && response.status >= 500) {
-        throw new ApiError(
-          response.status,
-          "network_error",
-          "Can’t reach the API. Confirm the Go server is running on port 18780.",
-        );
-      }
-      throw new ApiError(response.status, code, message);
-    }
-
-    return (await response.json()) as T;
-  };
-
-  const relative = path.startsWith("http")
-    ? path
-    : path.startsWith("/")
-      ? path
-      : `/${path}`;
-  if (shouldSerialize(relative)) {
-    const signal = init?.signal ?? undefined;
-    return enqueueDb(execute, signal ?? undefined);
-  }
-  return execute();
-}
-
 export function withQuery(
   path: string,
   params: Record<string, string | number | boolean | undefined | null>,
@@ -409,18 +582,25 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
     loading: Boolean(url),
     refreshing: false,
   });
+  const urlRef = useRef(url);
+  const generationRef = useRef(0);
 
   const reload = useCallback(() => setEpoch((value) => value + 1), []);
 
   useEffect(() => {
     if (!url) {
+      generationRef.current += 1;
+      urlRef.current = url;
       setState({ data: null, error: null, loading: false, refreshing: false });
       return;
     }
 
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    urlRef.current = url;
     const controller = new AbortController();
     setState((prev) => ({
-      ...prev,
+      data: prev.data,
       error: null,
       loading: prev.data === null,
       refreshing: prev.data !== null,
@@ -428,11 +608,17 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
 
     apiGet<T>(url, { signal: controller.signal })
       .then((data) => {
-        if (controller.signal.aborted) return;
+        if (generation !== generationRef.current || controller.signal.aborted) return;
         setState({ data, error: null, loading: false, refreshing: false });
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted || isAbortError(error)) return;
+        if (
+          generation !== generationRef.current ||
+          controller.signal.aborted ||
+          isAbortError(error)
+        ) {
+          return;
+        }
         const next =
           error instanceof ApiError
             ? error
@@ -507,10 +693,12 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
   const generationRef = useRef(0);
   const moreAbortRef = useRef<AbortController | null>(null);
 
-  buildUrlRef.current = buildUrl;
-  getKeyRef.current = getKey;
-
   const reload = useCallback(() => setEpoch((value) => value + 1), []);
+
+  useEffect(() => {
+    buildUrlRef.current = buildUrl;
+    getKeyRef.current = getKey;
+  }, [buildUrl, getKey]);
 
   useEffect(() => {
     moreAbortRef.current?.abort();
@@ -538,21 +726,20 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     const controller = new AbortController();
-    const sameFilter = filterRef.current === filterKey;
     filterRef.current = filterKey;
     inflightRef.current = true;
     cursorRef.current = 0;
     hasMoreRef.current = false;
 
     setState((prev) => ({
-      items: sameFilter ? prev.items : [],
-      total: sameFilter ? prev.total : 0,
-      hasMore: false,
-      loading: !sameFilter || prev.items.length === 0,
-      refreshing: sameFilter && prev.items.length > 0,
+      items: prev.items,
+      total: prev.total,
+      hasMore: prev.hasMore,
+      loading: prev.items.length === 0,
+      refreshing: prev.items.length > 0,
       loadingMore: false,
       error: null,
-      data: sameFilter ? prev.data : null,
+      data: prev.data,
     }));
 
     apiGet<P>(buildUrlRef.current(0), { signal: controller.signal })
@@ -600,7 +787,9 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
 
     return () => {
       controller.abort();
-      inflightRef.current = false;
+      if (generation === generationRef.current) {
+        inflightRef.current = false;
+      }
     };
   }, [filterKey, epoch]);
 
@@ -618,9 +807,10 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
 
     apiGet<P>(buildUrlRef.current(offset), { signal: controller.signal })
       .then((page) => {
-        if (generation !== generationRef.current) return;
+        if (generation !== generationRef.current || controller.signal.aborted) {
+          return;
+        }
         inflightRef.current = false;
-        if (controller.signal.aborted) return;
         const incoming = page.items ?? [];
         cursorRef.current = page.offset + incoming.length;
         setState((prev) => {

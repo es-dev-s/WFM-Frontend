@@ -199,7 +199,7 @@ function NavbarSearchComponent() {
                 }}
               />
               <SearchSectionBlock
-                title="Biomatic"
+                title="Biometrics"
                 hits={biomaticHits}
                 activeKey={flat[active]?.key}
                 loading={results.loading}

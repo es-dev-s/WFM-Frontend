@@ -4,11 +4,8 @@ import { memo } from "react";
 import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 import { useMenu } from "@/hooks/use-menu";
-import {
-  CURRENT_USER,
-  LOGOUT_ACTION,
-  PROFILE_ACTIONS,
-} from "@/lib/navbar-data";
+import { LOGOUT_ACTION, PROFILE_ACTIONS } from "@/lib/navbar-data";
+import { useSession } from "@/components/auth/SessionProvider";
 
 type ProfileMenuProps = {
   open: boolean;
@@ -20,6 +17,17 @@ function ProfileMenuComponent({ open, onOpenChange }: ProfileMenuProps) {
     open,
     onClose: () => onOpenChange(false),
   });
+  const user = useSession();
+
+  async function logout() {
+    onOpenChange(false);
+    try {
+      await fetch("/api/v1/auth/logout", { method: "POST" });
+    } catch {
+      /* still leave */
+    }
+    window.location.href = "/login";
+  }
 
   return (
     <div className="smp-menu" ref={rootRef} data-open={open ? "true" : "false"}>
@@ -34,11 +42,11 @@ function ProfileMenuComponent({ open, onOpenChange }: ProfileMenuProps) {
         onClick={() => onOpenChange(!open)}
       >
         <span className="smp-navbar__avatar" aria-hidden="true">
-          {CURRENT_USER.initials}
+          {user.initials}
         </span>
         <span className="smp-navbar__user-copy">
-          <span className="smp-navbar__user-name">{CURRENT_USER.name}</span>
-          <span className="smp-navbar__user-role">{CURRENT_USER.role}</span>
+          <span className="smp-navbar__user-name">{user.name}</span>
+          <span className="smp-navbar__user-role">{user.roleLabel}</span>
         </span>
         <span className="smp-navbar__user-chevron" aria-hidden="true">
           <ChevronDown strokeWidth={1.75} />
@@ -58,18 +66,20 @@ function ProfileMenuComponent({ open, onOpenChange }: ProfileMenuProps) {
               className="smp-navbar__avatar smp-popover__avatar"
               aria-hidden="true"
             >
-              {CURRENT_USER.initials}
+              {user.initials}
             </span>
             <div className="smp-popover__profile-copy">
-              <span className="smp-popover__profile-name">{CURRENT_USER.name}</span>
-              <span className="smp-popover__profile-email">{CURRENT_USER.email}</span>
+              <span className="smp-popover__profile-name">{user.name}</span>
+              <span className="smp-popover__profile-email">{user.email}</span>
             </div>
           </div>
 
           <div className="smp-popover__divider" aria-hidden="true" />
 
           <div className="smp-popover__list smp-popover__list--actions">
-            {PROFILE_ACTIONS.map((action) => {
+            {PROFILE_ACTIONS.filter(
+              (action) => !action.wfmOnly || user.role === "wfm",
+            ).map((action) => {
               const Icon = action.icon;
               return (
                 <Link
@@ -100,7 +110,7 @@ function ProfileMenuComponent({ open, onOpenChange }: ProfileMenuProps) {
               className="smp-action smp-action--danger"
               role="menuitem"
               tabIndex={open ? 0 : -1}
-              onClick={() => onOpenChange(false)}
+              onClick={logout}
             >
               <span className="smp-action__icon" aria-hidden="true">
                 <LOGOUT_ACTION.icon strokeWidth={1.75} />

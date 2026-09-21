@@ -2,14 +2,30 @@ import { cn } from "@/lib/cn";
 
 export function StatusPill({ value }: { value: string }) {
   const normalized = value.trim().toLowerCase();
+  const compact = normalized.replace(/[\s_-]+/g, "");
   const tone =
-    normalized === "present" || normalized === "active" || normalized === "yes"
+    normalized === "present" ||
+    normalized === "active" ||
+    normalized === "tracking" ||
+    normalized === "superadmin" ||
+    normalized === "yes" ||
+    compact === "ontime" ||
+    compact === "fullday" ||
+    compact === "stillin"
       ? "ok"
-      : normalized === "absent" ||
-          normalized === "inactive" ||
-          normalized === "no"
-        ? "bad"
-        : "neutral";
+      : compact === "leave" ||
+          compact === "onleave" ||
+          compact === "halfday" ||
+          compact === "late" ||
+          compact === "early"
+        ? "warn"
+        : normalized === "absent" ||
+            normalized === "inactive" ||
+            normalized === "offline" ||
+            normalized === "disabled" ||
+            normalized === "no"
+          ? "bad"
+          : "neutral";
 
   return (
     <span className="smp-pill" data-tone={tone} title={value || "—"}>

@@ -1,18 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 export function useChartWidth(fallback = 640) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(fallback);
+  const widthRef = useRef(fallback);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = containerRef.current;
     if (!node) return;
 
     const update = () => {
-      const next = node.getBoundingClientRect().width;
-      if (next > 0) setWidth(next);
+      const next = Math.round(node.getBoundingClientRect().width);
+      if (next > 0 && next !== widthRef.current) {
+        widthRef.current = next;
+        setWidth(next);
+      }
     };
 
     update();
@@ -30,6 +34,7 @@ export function pickNearestIndex(
   viewWidth: number,
   xs: number[],
 ): number {
+  if (!xs.length || svgRect.width <= 0 || viewWidth <= 0) return 0;
   const x = ((clientX - svgRect.left) / svgRect.width) * viewWidth;
   let nearest = 0;
   let minDist = Number.POSITIVE_INFINITY;

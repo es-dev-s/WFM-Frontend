@@ -1,5 +1,6 @@
 "use client";
 
+import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { FilterSearch } from "@/components/ui/FilterSearch";
 import { FilterSelect } from "@/components/ui/FilterSelect";
 import {
@@ -7,29 +8,42 @@ import {
   MEMBER_COLUMNS,
   TEAM_COLUMNS,
 } from "@/components/data/activity-columns";
-import { BiomaticStatCards } from "@/components/data/BiomaticStatCards";
+import {
+  BiomaticStatCards,
+  type BiomaticCardId,
+} from "@/components/data/BiomaticStatCards";
 import { ControlBar } from "@/components/data/ControlBar";
 import { DataTable } from "@/components/data/DataTable";
 import { QueryState } from "@/components/data/QueryState";
-import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   type DailyLogRow,
-  type BiomaticSummary,
   type FilterOptions,
   type ListPage,
   type MemberDirectoryRow,
-  type Team,
-  useInfinitePage,
   useQuery,
   withQuery,
 } from "@/lib/api";
+import { isoDateInZone } from "@/lib/datetime";
 import { recordHref } from "@/lib/href";
+import {
+  filterBioLogs,
+  filterBioMembers,
+  summaryFromBioMembers,
+  teamsFromBioMembers,
+} from "@/lib/list-scope";
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
-
-const PAGE_SIZE = 40;
+import { useEffect, useMemo, useState } from "react";
 
 type Tab = "teams" | "members" | "logs";
+
+function selectedBiomaticCard(tab: Tab, dayStatus: string): BiomaticCardId | null {
+  if (dayStatus === "Present") return "presentMembers";
+  if (dayStatus === "Leave") return "leaveMembers";
+  if (dayStatus === "Absent") return "absentMembers";
+  if (tab === "teams") return "teams";
+  if (tab === "members") return "totalMembers";
+  return null;
+}
 
 function memberKey(row: MemberDirectoryRow) {
   return row.id;
@@ -41,78 +55,111 @@ function logKey(row: DailyLogRow) {
 
 export default function BiomaticPage() {
   const router = useRouter();
+  const today = useMemo(() => isoDateInZone(), []);
   const [tab, setTab] = useState<Tab>("teams");
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState(today);
   const [teamId, setTeamId] = useState("");
   const [roleId, setRoleId] = useState("");
   const [dayStatus, setDayStatus] = useState("");
   const [query, setQuery] = useState("");
-  const debouncedQuery = useDebouncedValue(query);
+  const [memberId, setMemberId] = useState("");
+  const [emailScope, setEmailScope] = useState<string[]>([]);
 
-  const listParams = useMemo(
-    () => ({
-      teamId: teamId || undefined,
-      role: roleId || undefined,
-      status: tab === "logs" ? dayStatus || undefined : undefined,
-      q: debouncedQuery || undefined,
-    }),
-    [teamId, roleId, dayStatus, debouncedQuery, tab],
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const view = params.get("view") || "";
+    const team = params.get("teamId") || "";
+    const member = params.get("memberId") || "";
+    const emails = (params.get("emails") || "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const start = params.get("startDate") || "";
+    const end = params.get("endDate") || "";
+    if (team) setTeamId(team);
+    if (member) setMemberId(member);
+    if (emails.length) setEmailScope(emails);
+    if (start) setStartDate(start);
+    if (end) setEndDate(end);
+    if (view === "members") {
+      setTab("members");
+      setDayStatus("");
+      return;
+    }
+    if (view === "teams") {
+      setTab("teams");
+      setDayStatus("");
+      return;
+    }
+    if (view === "present" || view === "leave" || view === "absent") {
+      setTab("members");
+      setDayStatus(view === "present" ? "Present" : view === "leave" ? "Leave" : "Absent");
+    }
+  }, []);
+
+  const snapshotParams = useMemo(
+    () => ({ startDate, endDate, all: 1 }),
+    [startDate, endDate],
+  );
+  const filters = useQuery<FilterOptions>(
+    withQuery("/filters", { startDate, endDate }),
+  );
+  const membersAll = useQuery<ListPage<MemberDirectoryRow>>(
+    withQuery("/members", snapshotParams),
+  );
+  const logsAll = useQuery<ListPage<DailyLogRow>>(
+    tab === "logs" ? withQuery("/daily-logs", snapshotParams) : null,
   );
 
-  const membersKey =
-    tab === "members" ? withQuery("/members", listParams) : null;
-  const logsKey =
-    tab === "logs" ? withQuery("/daily-logs", listParams) : null;
-
-  const buildMembersUrl = useCallback(
-    (offset: number) =>
-      withQuery("/members", { ...listParams, limit: PAGE_SIZE, offset }),
-    [listParams],
+  const filteredTeams = useMemo(
+    () => teamsFromBioMembers(membersAll.data?.items ?? [], teamId, query),
+    [membersAll.data?.items, teamId, query],
   );
-  const buildLogsUrl = useCallback(
-    (offset: number) =>
-      withQuery("/daily-logs", { ...listParams, limit: PAGE_SIZE, offset }),
-    [listParams],
-  );
-
-  const filters = useQuery<FilterOptions>("/filters");
-  const summaryKey = withQuery("/biomatic/summary", {
-    teamId: teamId || undefined,
-    role: roleId || undefined,
-  });
-  const summary = useQuery<BiomaticSummary>(summaryKey);
-  const teams = useQuery<Team[]>(tab === "teams" ? "/teams" : null);
-  const members = useInfinitePage<MemberDirectoryRow, ListPage<MemberDirectoryRow>>(
-    membersKey,
-    buildMembersUrl,
-    memberKey,
-  );
-  const logs = useInfinitePage<DailyLogRow, ListPage<DailyLogRow>>(
-    logsKey,
-    buildLogsUrl,
-    logKey,
-  );
-
-  const filteredTeams = useMemo(() => {
-    const list = teams.data ?? [];
-    const needle = debouncedQuery.trim().toLowerCase();
-    return list.filter((team) => {
-      if (teamId && team.id !== teamId) return false;
-      if (!needle) return true;
-      return team.name.toLowerCase().includes(needle);
-    });
-  }, [teams.data, teamId, debouncedQuery]);
-
-  const memberRows = members.items;
-  const logRows = logs.items;
-  const filterTeams = filters.data?.teams ?? [];
+  const filterTeams = useMemo(() => {
+    const byId = new Map((filters.data?.teams ?? []).map((team) => [team.id, team]));
+    for (const team of filteredTeams) {
+      if (!team.id || byId.has(team.id)) continue;
+      byId.set(team.id, { id: team.id, label: team.name });
+    }
+    return [...byId.values()].sort((left, right) =>
+      left.label.localeCompare(right.label, undefined, { sensitivity: "base" }),
+    );
+  }, [filters.data?.teams, filteredTeams]);
   const filterRoles = filters.data?.roles ?? [];
+  const peopleScope = useMemo(
+    () => ({ memberId, emails: emailScope }),
+    [memberId, emailScope],
+  );
+  const scopedMembers = useMemo(
+    () =>
+      filterBioMembers(membersAll.data?.items ?? [], teamId, roleId, query, "", filterTeams, peopleScope),
+    [membersAll.data?.items, teamId, roleId, query, filterTeams, peopleScope],
+  );
+  const memberRows = useMemo(
+    () =>
+      tab === "logs" || !dayStatus
+        ? scopedMembers
+        : filterBioMembers(scopedMembers, "", "", "", dayStatus, [], peopleScope),
+    [scopedMembers, tab, dayStatus, peopleScope],
+  );
+  const summary = useMemo(() => summaryFromBioMembers(scopedMembers), [scopedMembers]);
+  const logRows = useMemo(
+    () =>
+      filterBioLogs(
+        logsAll.data?.items ?? [],
+        teamId,
+        roleId,
+        dayStatus,
+        query,
+        filterTeams,
+        peopleScope,
+      ),
+    [logsAll.data?.items, teamId, roleId, dayStatus, query, filterTeams, peopleScope],
+  );
 
   const activeError =
-    tab === "teams"
-      ? teams.error
-      : tab === "members"
-        ? members.error
-        : logs.error;
+    tab === "teams" || tab === "members" ? membersAll.error : logsAll.error;
   const activeHasRows =
     tab === "teams"
       ? filteredTeams.length > 0
@@ -121,22 +168,58 @@ export default function BiomaticPage() {
         : logRows.length > 0;
   const retry = () => {
     filters.reload();
-    if (tab === "teams") teams.reload();
-    else if (tab === "members") members.reload();
-    else logs.reload();
+    membersAll.reload();
+    logsAll.reload();
+  };
+  const selectedCard = selectedBiomaticCard(tab, dayStatus);
+  const logsEmpty =
+    dayStatus === "Present"
+      ? "No present attendance for this range."
+      : dayStatus === "Leave"
+        ? "No leave rows for this range."
+        : dayStatus === "Absent"
+          ? "No absent attendance for this range."
+          : "No attendance rows match these filters.";
+
+  const applyCard = (next: BiomaticCardId) => {
+    if (selectedCard === next) {
+      if (next === "presentMembers" || next === "leaveMembers" || next === "absentMembers") {
+        setDayStatus("");
+      }
+      return;
+    }
+    if (next === "teams") {
+      setTab("teams");
+      setDayStatus("");
+      return;
+    }
+    if (next === "totalMembers") {
+      setTab("members");
+      setDayStatus("");
+      return;
+    }
+    setTab("members");
+    setDayStatus(
+      next === "presentMembers" ? "Present" : next === "leaveMembers" ? "Leave" : "Absent",
+    );
   };
 
   return (
     <div className="smp-page-stack smp-page-stack--fill">
       <div className="smp-stage">
-        {summary.data ? (
-          <BiomaticStatCards summary={summary.data} />
+        {membersAll.data ? (
+          <BiomaticStatCards
+            summary={summary}
+            teams={filterTeams.length}
+            selected={selectedCard}
+            onSelect={applyCard}
+          />
         ) : (
           <QueryState
-            loading={summary.loading}
-            error={summary.error}
-            onRetry={summary.reload}
-            label="Biomatic summary"
+            loading={membersAll.loading}
+            error={membersAll.error}
+            onRetry={membersAll.reload}
+            label="Biometrics summary"
           />
         )}
 
@@ -145,11 +228,11 @@ export default function BiomaticPage() {
             <div
               className="smp-segment"
               role="tablist"
-              aria-label="Biomatic views"
+              aria-label="Biometrics views"
             >
               {(
                 [
-                  ["teams", "Teams"],
+                  ["teams", "Departments"],
                   ["members", "Members"],
                   ["logs", "Logs"],
                 ] as const
@@ -168,24 +251,34 @@ export default function BiomaticPage() {
           }
           stats={[
             tab === "teams"
-              ? { label: "Teams", value: String(filteredTeams.length) }
+              ? { label: "Departments", value: String(filteredTeams.length) }
               : tab === "members"
                 ? {
                     label: "Members",
-                    value: String(members.total || "—"),
+                    value: String(memberRows.length || "—"),
                   }
                 : {
                     label: "Logs",
-                    value: String(logs.total || "—"),
+                    value: String(logRows.length || "—"),
                   },
           ]}
         >
           <div className="smp-filters--inline">
+            <DateRangePicker
+              start={startDate}
+              end={endDate}
+              max={today}
+              onChange={(nextStart, nextEnd) => {
+                setStartDate(nextStart);
+                setEndDate(nextEnd);
+              }}
+            />
             <FilterSelect
-              label="Team"
+              label="Department"
               value={teamId}
-              allLabel="All teams"
+              allLabel="All departments"
               options={filterTeams}
+              searchable
               onChange={setTeamId}
             />
             <FilterSelect
@@ -193,9 +286,10 @@ export default function BiomaticPage() {
               value={roleId}
               allLabel="All roles"
               options={filterRoles}
+              searchable
               onChange={setRoleId}
             />
-            {tab === "logs" ? (
+            {tab === "members" || tab === "logs" ? (
               <FilterSelect
                 label="Day"
                 value={dayStatus}
@@ -203,6 +297,7 @@ export default function BiomaticPage() {
                 options={[
                   { id: "Present", label: "Present" },
                   { id: "Absent", label: "Absent" },
+                  { id: "Leave", label: "Leave" },
                 ]}
                 onChange={setDayStatus}
               />
@@ -220,19 +315,19 @@ export default function BiomaticPage() {
             loading={false}
             error={activeError}
             onRetry={retry}
-            label="Biomatic"
+            label="Biometrics"
           />
         ) : tab === "teams" ? (
           <DataTable
             columns={TEAM_COLUMNS}
             rows={filteredTeams}
             getKey={(row) => row.id}
-            resetKey={`${teamId}:${debouncedQuery}`}
+            resetKey={`${teamId}:${query}`}
             totalCount={filteredTeams.length}
             empty={
-              teams.loading ? "Loading teams…" : "No teams match these filters."
+              membersAll.loading ? "Loading departments…" : "No departments match these filters."
             }
-            refreshing={teams.loading || teams.refreshing}
+            refreshing={membersAll.loading || membersAll.refreshing}
             onRowClick={(row) =>
               router.push(recordHref("/biomatic/teams", row.id))
             }
@@ -242,17 +337,20 @@ export default function BiomaticPage() {
             columns={MEMBER_COLUMNS}
             rows={memberRows}
             getKey={memberKey}
-            resetKey={membersKey ?? "members"}
-            hasMore={members.hasMore}
-            loadingMore={members.loadingMore}
-            totalCount={members.total}
-            onNearEnd={members.loadMore}
-            empty={
-              members.loading
-                ? "Loading members…"
-                : "No members match these filters."
-            }
-            refreshing={members.loading || members.refreshing}
+            resetKey={`${startDate}:${endDate}:${teamId}:${roleId}:${query}:${dayStatus}`}
+            totalCount={memberRows.length}
+              empty={
+                membersAll.loading
+                  ? "Loading members…"
+                  : dayStatus === "Present"
+                    ? "No present members for this range."
+                    : dayStatus === "Leave"
+                      ? "No leave members for this range."
+                      : dayStatus === "Absent"
+                        ? "No absent members for this range."
+                        : "No members match these filters."
+              }
+            refreshing={membersAll.loading || membersAll.refreshing}
             onRowClick={(row) =>
               router.push(recordHref("/biomatic/members", row.id))
             }
@@ -262,17 +360,14 @@ export default function BiomaticPage() {
             columns={ACTIVITY_COLUMNS}
             rows={logRows}
             getKey={logKey}
-            resetKey={logsKey ?? "logs"}
-            hasMore={logs.hasMore}
-            loadingMore={logs.loadingMore}
-            totalCount={logs.total}
-            onNearEnd={logs.loadMore}
+            resetKey={`${startDate}:${endDate}:${teamId}:${roleId}:${dayStatus}:${query}`}
+            totalCount={logRows.length}
             empty={
-              logs.loading
+              logsAll.loading
                 ? "Loading daily logs…"
-                : "No attendance rows match these filters."
+                : logsEmpty
             }
-            refreshing={logs.loading || logs.refreshing}
+            refreshing={logsAll.loading || logsAll.refreshing}
             onRowClick={(row) =>
               router.push(recordHref("/biomatic/logs", row.id))
             }
