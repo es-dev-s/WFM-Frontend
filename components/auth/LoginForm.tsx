@@ -4,11 +4,10 @@ import { BrandMark } from "@/components/layout/BrandMark";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { ApiError } from "@/lib/api";
 import { Eye, EyeOff } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 export function LoginForm() {
-  const router = useRouter();
   const search = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -23,6 +22,7 @@ export function LoginForm() {
     try {
       const response = await fetch("/api/v1/auth/login", {
         method: "POST",
+        credentials: "same-origin",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
@@ -38,8 +38,7 @@ export function LoginForm() {
         );
       }
       const next = search.get("next") || "/";
-      router.replace(next.startsWith("/") ? next : "/");
-      router.refresh();
+      window.location.assign(next.startsWith("/") ? next : "/");
     } catch (caught) {
       const message =
         caught instanceof ApiError

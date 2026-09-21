@@ -25,7 +25,7 @@ export async function POST(request: Request) {
       { ok: true },
       { headers: { "Cache-Control": "no-store" } },
     );
-    response.headers.append("Set-Cookie", expireCookieHeader());
+    response.headers.append("Set-Cookie", expireCookieHeader(request));
     return response;
   } catch (error) {
     return errorResponse(error);

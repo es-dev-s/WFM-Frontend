@@ -75,7 +75,7 @@ export async function POST(request: Request) {
       { user: shown },
       { headers: { "Cache-Control": "no-store" } },
     );
-    response.headers.append("Set-Cookie", cookieHeader(session.token, session.maxAge));
+    response.headers.append("Set-Cookie", cookieHeader(session.token, session.maxAge, request));
     return response;
   } catch (error) {
     return errorResponse(error);
