@@ -1,7 +1,7 @@
 "use client";
 
 import { PersonCell } from "@/components/data/cells";
-import { Delta, StatusPill } from "@/components/data/StatusPill";
+import { Delta } from "@/components/data/StatusPill";
 import type { AttentionItem, LeaderRow } from "@/lib/api";
 import { Search, X } from "lucide-react";
 import Link from "next/link";
@@ -31,7 +31,6 @@ export function RankMemberRow({
   value,
   delta,
   positive,
-  status,
   reason,
   href,
 }: {
@@ -43,15 +42,9 @@ export function RankMemberRow({
   value: string;
   delta?: string;
   positive?: boolean;
-  status?: string;
   reason?: string;
   href?: string;
 }) {
-  const showScore =
-    Boolean(value) &&
-    value !== "00:00:00" &&
-    value !== "—" &&
-    (!status || value.toLowerCase() !== status.toLowerCase());
   const body = (
     <>
       <span className="smp-rank__index" aria-hidden="true">
@@ -62,8 +55,7 @@ export function RankMemberRow({
         {team || "Unassigned"}
       </span>
       <div className="smp-rank__value">
-        {status ? <StatusPill value={status} /> : null}
-        {showScore ? <span>{value}</span> : status ? null : <span>{value || "—"}</span>}
+        <span>{value || "—"}</span>
         {reason ? <span className="smp-rank__reason">{reason}</span> : null}
         {delta && typeof positive === "boolean" ? (
           <Delta value={delta} positive={positive} />
@@ -91,7 +83,6 @@ export function DashboardRankingModal({
   leaders,
   attention,
   view,
-  showStatus = false,
   memberHref,
   onClose,
 }: {
@@ -101,7 +92,6 @@ export function DashboardRankingModal({
   leaders: LeaderRow[];
   attention: AttentionItem[];
   view: "leaders" | "attention";
-  showStatus?: boolean;
   memberHref?: (id: string, email: string) => string;
   onClose: () => void;
 }) {
@@ -198,7 +188,7 @@ export function DashboardRankingModal({
           <span>#</span>
           <span>Person</span>
           <span>Team</span>
-          <span>{view === "attention" ? "Status" : "Score"}</span>
+          <span>{view === "attention" ? "Days absent" : "Days present"}</span>
         </div>
 
         {rows.length === 0 ? (
@@ -220,7 +210,6 @@ export function DashboardRankingModal({
                       team={row.team}
                       value={row.value}
                       reason={row.reason}
-                      status={row.status}
                       href={memberHref?.(row.id, row.email)}
                     />
                   );
@@ -238,7 +227,6 @@ export function DashboardRankingModal({
                       value={row.value}
                       delta={row.delta}
                       positive={row.positive}
-                      status={showStatus ? row.status : undefined}
                       href={memberHref?.(row.id, row.email)}
                     />
                   );

@@ -174,6 +174,7 @@ const EMPTY_LANE: PunchLane = {
 export const EMPTY_PUNCH_COMPARE: PunchCompare = {
   checkIn: EMPTY_LANE,
   checkOut: EMPTY_LANE,
+  avgGap: "—",
 };
 
 function slotSource(slot: PunchCompareSlot): "bio" | "tivazo" | "combined" {
@@ -272,9 +273,7 @@ export function DashboardPunchCompare({
       <header className="smp-punch-block__head">
         <div>
           <h3 className="smp-punch-block__title">Check-in and check-out</h3>
-          <p className="smp-punch-block__hint">
-            Medians of confirmed punches — rest days and unconfirmed live outs are excluded
-          </p>
+
         </div>
       </header>
       <div className="smp-punch-compare">

@@ -8,7 +8,7 @@ import { useState } from "react";
 
 type RankView = "leaders" | "attention";
 
-const PREVIEW = 6;
+const PREVIEW = 4;
 
 export function DashboardLeaderboardPanel({
   board,
@@ -50,7 +50,7 @@ export function DashboardLeaderboardPanel({
         <div>
           <h2 className="smp-panel__title">Member ranking</h2>
           <p className="smp-panel__meta">
-            {info.valueLabel} · {teamLabel} · {dateRangeLabel}
+            {view === "attention" ? "Days absent" : info.valueLabel} · {teamLabel} · {dateRangeLabel}
           </p>
         </div>
         <div className="smp-dashboard-rank-tools">
@@ -115,7 +115,6 @@ export function DashboardLeaderboardPanel({
                     value={row.value}
                     delta={row.delta}
                     positive={row.positive}
-                    status={metric === "present" ? row.status : undefined}
                     href={memberHref(row.id, row.email)}
                   />
                 ))}
@@ -146,7 +145,6 @@ export function DashboardLeaderboardPanel({
                     email={item.email || ""}
                     team={item.team}
                     value={item.value}
-                    status={item.status}
                     reason={item.reason}
                     href={memberHref(item.id, item.email)}
                   />
@@ -160,11 +158,10 @@ export function DashboardLeaderboardPanel({
       <DashboardRankingModal
         open={open}
         title={view === "leaders" ? `Highest ${info.valueLabel.toLowerCase()}` : `Needs attention`}
-        meta={`${info.valueLabel} · ${teamLabel} · ${dateRangeLabel}`}
+        meta={`${view === "attention" ? "Days absent" : info.valueLabel} · ${teamLabel} · ${dateRangeLabel}`}
         leaders={leaders}
         attention={attention}
         view={view}
-        showStatus={metric === "present"}
         memberHref={memberHref}
         onClose={() => setOpen(false)}
       />

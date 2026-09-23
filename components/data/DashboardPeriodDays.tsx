@@ -14,7 +14,7 @@ import {
 } from "@/lib/identity";
 import { biomaticHref, emailsParam, recordHref, tivazoHref } from "@/lib/href";
 import { isRestStatus, normalizeDayStatus, formatHours } from "@/lib/server/metrics";
-import { dailyLogToRoster, formatMinutes, completedWorkSeconds, parseClockMinutes } from "@/lib/workday-clock";
+import { dailyLogToRoster, completedWorkSeconds } from "@/lib/workday-clock";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
@@ -83,14 +83,6 @@ function personLookups(person: PeriodPerson): string[] {
 function clock(value: string | undefined): string {
   const next = String(value || "").trim();
   return next || "—";
-}
-
-function medianLabel(values: number[]): string {
-  if (!values.length) return "—";
-  const sorted = [...values].sort((left, right) => left - right);
-  const mid = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  return formatMinutes(median);
 }
 
 function statusTone(status: string): "ok" | "bad" | "warn" | undefined {
@@ -447,18 +439,20 @@ export function DashboardPeriodDays({
   }, [bioLogs, tivazoLogs, liveBio, liveTivazo, startDate, endDate, people, today, index]);
 
   const visible = useMemo(() => {
+    // Group or member: only today and past days (no Upcoming rows in the list).
+    const base = rows.filter((row) => row.date <= today);
     const needle = query.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter((row) =>
+    if (!needle) return base;
+    return base.filter((row) =>
       [row.name, row.email, row.date, row.bioStatus, row.tivazoStatus].some((value) =>
         value.toLowerCase().includes(needle),
       ),
     );
-  }, [rows, query]);
+  }, [rows, query, today]);
 
   const PAGE_CHUNK = 120;
   const [rowLimit, setRowLimit] = useState(PAGE_CHUNK);
-  const windowKey = `${startDate}:${endDate}:${query}:${memberId || ""}:${rows.length}`;
+  const windowKey = `${startDate}:${endDate}:${query}:${memberId || ""}:${teamId || ""}:${rows.length}`;
   const [seenWindow, setSeenWindow] = useState(windowKey);
   if (seenWindow !== windowKey) {
     setSeenWindow(windowKey);
@@ -469,7 +463,8 @@ export function DashboardPeriodDays({
 
   const bioPresent = rows.filter((row) => row.date <= today && row.bioStatus === "Present").length;
   const tivazoPresent = rows.filter((row) => row.date <= today && row.tivazoStatus === "Present").length;
-  const dayCount = enumerateDaysISO(startDate, endDate).length;
+  // List hides future days; meta counts calendar days through today.
+  const dayCount = enumerateDaysISO(startDate, endDate).filter((day) => day <= today).length;
   const memberRangeStats = useMemo(() => {
     if (!memberId) return null;
     let presentDays = 0;
@@ -520,34 +515,6 @@ export function DashboardPeriodDays({
     };
   }, [memberId, rows, today, startDate, endDate]);
   const showName = !memberId && people.length > 1;
-  const typical = useMemo(() => {
-    const work = rows.filter(
-      (row) =>
-        row.date <= today &&
-        !isRestStatus(row.bioStatus) &&
-        !isRestStatus(row.tivazoStatus) &&
-        (row.bioStatus === "Present" || row.tivazoStatus === "Present"),
-    );
-    const minutes = (values: string[]) =>
-      values.map(parseClockMinutes).filter((value): value is number => value != null);
-    return {
-      workDays: work.length,
-      bioIn: medianLabel(minutes(work.map((row) => row.bioIn))),
-      bioOut: medianLabel(minutes(work.map((row) => row.bioOut))),
-      tivazoIn: medianLabel(minutes(work.map((row) => row.tivazoIn))),
-      tivazoOut: medianLabel(minutes(work.map((row) => row.tivazoOut))),
-      tracked: medianLabel(
-        work
-          .map((row) => row.tracked)
-          .map((value) => {
-            const match = value.trim().match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
-            if (!match) return null;
-            return Number(match[1]) * 60 + Number(match[2]);
-          })
-          .filter((value): value is number => value != null),
-      ),
-    };
-  }, [rows, today]);
 
   if (loading && bioLogs.length === 0 && tivazoLogs.length === 0) {
     return <QueryState loading error={null} label="day by day Bio and Tivazo" />;
@@ -575,7 +542,6 @@ export function DashboardPeriodDays({
             </span>
             <span>Bio {bioPresent} present</span>
             <span>Tivazo {tivazoPresent} present</span>
-            {typical.workDays ? <span>Typical from {typical.workDays} work days</span> : null}
           </p>
         </div>
         {people.length > 1 ? (
@@ -614,21 +580,16 @@ export function DashboardPeriodDays({
               <p className="smp-period-days__summary-hint">Weekly off / rest</p>
             </article>
           ) : null}
-          {memberRangeStats.upcomingDays > 0 ? (
-            <article className="smp-period-days__summary-card" data-tone="upcoming">
-              <p className="smp-period-days__summary-label">Upcoming</p>
-              <p className="smp-period-days__summary-value">{memberRangeStats.upcomingDays}</p>
-              <p className="smp-period-days__summary-hint">After today · not absent</p>
-            </article>
-          ) : null}
           <p className="smp-period-days__summary-total">
             {memberRangeStats.presentDays} present
             {" · "}
             {memberRangeStats.absentDays} absent
             {memberRangeStats.restDays ? ` · ${memberRangeStats.restDays} off` : ""}
-            {memberRangeStats.upcomingDays ? ` · ${memberRangeStats.upcomingDays} upcoming` : ""}
-            {" = "}
-            {memberRangeStats.accountedDays}/{memberRangeStats.totalDays} days
+            {" · "}
+            {memberRangeStats.presentDays +
+              memberRangeStats.absentDays +
+              memberRangeStats.restDays}{" "}
+            days through today
           </p>
         </div>
       ) : null}
@@ -736,34 +697,6 @@ export function DashboardPeriodDays({
               >
                 Show more ({hiddenCount} remaining)
               </button>
-            </div>
-          ) : null}
-          {typical.workDays ? (
-            <div className="smp-period-days__typical" data-name={showName ? "true" : "false"}>
-              <span className="smp-period-days__day">
-                <strong>Typical</strong>
-                <span>Median work-day times</span>
-              </span>
-              {showName ? <span className="smp-period-days__name">All selected</span> : null}
-              <span className="smp-clockins-pair" data-source="bio">
-                <span className="smp-pill" data-tone="ok">
-                  Bio
-                </span>
-                <span className="smp-period-days__times">
-                  <span>{typical.bioIn}</span>
-                  <span>{typical.bioOut}</span>
-                </span>
-              </span>
-              <span className="smp-clockins-pair" data-source="tivazo">
-                <span className="smp-pill" data-tone="ok">
-                  Tivazo
-                </span>
-                <span className="smp-period-days__times">
-                  <span>{typical.tivazoIn}</span>
-                  <span>{typical.tivazoOut}</span>
-                </span>
-              </span>
-              <span className="smp-period-days__tracked">{typical.tracked}</span>
             </div>
           ) : null}
         </div>

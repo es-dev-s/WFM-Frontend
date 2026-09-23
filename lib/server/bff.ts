@@ -61,6 +61,7 @@ import {
   isOpaqueId,
   percent,
   isPresentAttendance,
+  isRestStatus,
   normalizeDayStatus,
   sameDayStatus,
   titleStatus,
@@ -565,6 +566,8 @@ function activitiesToRangeMembers(
       attendance: "absent",
       tracked_seconds: 0,
       present_days: 0,
+      attended_days: 0,
+      absent_days: 0,
       tracked_label: "",
     });
   }
@@ -583,6 +586,8 @@ function activitiesToRangeMembers(
         groups: [],
         tracked_seconds: 0,
         present_days: 0,
+        attended_days: 0,
+        absent_days: 0,
       } as JsonMap);
     const dayTracked = trackedSecondsOf(act.trackedTime);
     const dayStatus = normalizeDayStatus(asString(act.status) || asString(act.attendance));
@@ -596,9 +601,12 @@ function activitiesToRangeMembers(
       const shot = clockLabel(asNumber(act.last_taken_screenshot));
       if (shot) prev.last_screenshot = shot;
       prev.tracked_seconds = asNumber(prev.tracked_seconds) + dayTracked;
+      prev.attended_days = asNumber(prev.attended_days) + 1;
       // Denominator for Avg Work Hour: only days that actually contributed tracked time.
       if (dayTracked > 0) prev.present_days = asNumber(prev.present_days) + 1;
       prev.tracked_label = formatSecondsLabel(asNumber(prev.tracked_seconds));
+    } else if (!isRestStatus(dayStatus)) {
+      prev.absent_days = asNumber(prev.absent_days) + 1;
     }
     byId.set(id, prev);
   }
@@ -957,6 +965,12 @@ function overlayLiveMembers(history: JsonMap[], live: JsonMap[]): JsonMap[] {
       attendances: prev.attendances,
       groups: asStringArray(row.groups).length ? asStringArray(row.groups) : asStringArray(prev.groups),
       department: asString(row.department) || asString(prev.department),
+      // Live partial-day rows must not wipe range day tallies.
+      present_days: asNumber(prev.present_days),
+      attended_days: asNumber(prev.attended_days),
+      absent_days: asNumber(prev.absent_days),
+      tracked_seconds: Math.max(asNumber(prev.tracked_seconds), asNumber(row.tracked_seconds)),
+      tracked_label: asString(prev.tracked_label) || asString(row.tracked_label),
     });
   }
   return [...map.values()];
@@ -1624,6 +1638,8 @@ function logsToTivazoMembers(rows: DailyLogRow[], liveMembers: JsonMap[]): JsonM
       attendance: "absent",
       tracked_seconds: 0,
       present_days: 0,
+      attended_days: 0,
+      absent_days: 0,
       tracked_label: "",
     });
   }
@@ -1642,19 +1658,25 @@ function logsToTivazoMembers(rows: DailyLogRow[], liveMembers: JsonMap[]): JsonM
         role: row.role,
         tracked_seconds: 0,
         present_days: 0,
+        attended_days: 0,
+        absent_days: 0,
       } as JsonMap);
     prev.name = row.name || asString(prev.name);
     prev.email = row.email || asString(prev.email);
     prev.groups = row.groups.length ? row.groups : asStringArray(prev.groups);
     prev.designation = row.designation || asString(prev.designation);
-    if (normalizeDayStatus(row.status) === "Present") {
+    const dayStatus = normalizeDayStatus(row.status);
+    if (dayStatus === "Present") {
       prev.attendance = "present";
       if (!asString(prev.clocked_in) && row.inTime) prev.clocked_in = row.inTime;
       if (row.outTime) prev.last_screenshot = row.outTime;
       const dayTracked = trackedSecondsOf(row.trackedTime);
       prev.tracked_seconds = asNumber(prev.tracked_seconds) + dayTracked;
+      prev.attended_days = asNumber(prev.attended_days) + 1;
       if (dayTracked > 0) prev.present_days = asNumber(prev.present_days) + 1;
       prev.tracked_label = formatSecondsLabel(asNumber(prev.tracked_seconds));
+    } else if (!isRestStatus(dayStatus)) {
+      prev.absent_days = asNumber(prev.absent_days) + 1;
     }
     byId.set(id, prev);
   }
@@ -2743,6 +2765,12 @@ function buildPunchCompare(
         : punchGapFrom(outGaps, "Biometrics after Tivazo", "Biometrics before Tivazo"),
       overall: punchMomentFrom(outCombined),
     },
+    avgGap: (() => {
+      const samples = [...inGaps, ...outGaps].map((value) => Math.abs(value));
+      if (!samples.length) return "—";
+      const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+      return formatDurationMinutes(Math.round(mean));
+    })(),
   };
 }
 
@@ -2803,11 +2831,31 @@ function needsAttention(member: JsonMap, metric: TrendMetric): boolean {
 }
 
 function attentionValue(member: JsonMap, metric: TrendMetric, tracked: number): string {
+  if (metric === "present") return formatDayCount(rankingAbsentDays(member));
   if (metric === "attendance") {
     return normalizeDayStatus(asString(member.attendance)) === "Present" ? "100%" : "0%";
   }
   if (metric === "utilization") return utilization(tracked);
   return tracked > 0 ? formatHours(tracked) : "";
+}
+
+function formatDayCount(days: number): string {
+  const n = Math.max(0, Math.round(days));
+  return n === 1 ? "1 day" : `${n} days`;
+}
+
+function rankingPresentDays(member: JsonMap): number {
+  const attended = asNumber(member.attended_days);
+  if (attended > 0) return attended;
+  const trackedDays = asNumber(member.present_days);
+  if (trackedDays > 0) return trackedDays;
+  return normalizeDayStatus(asString(member.attendance)) === "Present" ? 1 : 0;
+}
+
+function rankingAbsentDays(member: JsonMap): number {
+  const absent = asNumber(member.absent_days);
+  if (absent > 0) return absent;
+  return normalizeDayStatus(asString(member.attendance)) === "Present" ? 0 : 1;
 }
 
 function buildLeaderboard(
@@ -2816,7 +2864,10 @@ function buildLeaderboard(
   catalog: Map<string, string>,
 ): { leaders: LeaderRow[]; attention: AttentionItem[] } {
   const ranked = [...members].sort((a, b) => {
-    if (metric === "present" || metric === "attendance") {
+    if (metric === "present") {
+      const byDays = rankingPresentDays(b) - rankingPresentDays(a);
+      if (byDays !== 0) return byDays;
+    } else if (metric === "attendance") {
       const left = asString(a.attendance).toLowerCase() === "present" ? 1 : 0;
       const right = asString(b.attendance).toLowerCase() === "present" ? 1 : 0;
       if (right !== left) return right - left;
@@ -2834,7 +2885,7 @@ function buildLeaderboard(
       status: normalizeDayStatus(attendance) || titleStatus(asString(member.status)),
       value:
         metric === "present"
-          ? titleStatus(attendance) || (present ? "Present" : "Absent")
+          ? formatDayCount(rankingPresentDays(member))
           : metric === "attendance"
             ? present
               ? "100%"
@@ -2847,6 +2898,10 @@ function buildLeaderboard(
   const attention: AttentionItem[] = ranked
     .filter((member) => needsAttention(member, metric))
     .sort((a, b) => {
+      if (metric === "present") {
+        const byAbsent = rankingAbsentDays(b) - rankingAbsentDays(a);
+        if (byAbsent !== 0) return byAbsent;
+      }
       const aPresent = normalizeDayStatus(asString(a.attendance)) === "Present" ? 1 : 0;
       const bPresent = normalizeDayStatus(asString(b.attendance)) === "Present" ? 1 : 0;
       if (aPresent !== bPresent) return aPresent - bPresent;
@@ -3050,6 +3105,8 @@ function rosterPerson(
       trackedSecondsOf(raw.tracked_seconds) || trackedSecondsOf(raw.tracked_label),
     trackedLabel: asString(raw.tracked_label),
     presentDays: asNumber(raw.present_days) || undefined,
+    attendedDays: asNumber(raw.attended_days) || undefined,
+    absentDays: asNumber(raw.absent_days) || undefined,
     designation: asString(raw.designation),
     joinDate: asString(raw.join_date),
   };
@@ -3520,6 +3577,7 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
       tivazoAvgWorkHours: tivazo.avgWorkHours,
       bioClockIn: hourly.compare.checkIn.first.time,
       tivazoClockIn: hourly.compare.checkIn.second.time,
+      avgSourceGap: hourly.compare.avgGap,
     },
     filters: {
       teams: mergedTeams,

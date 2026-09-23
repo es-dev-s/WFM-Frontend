@@ -22,6 +22,10 @@ import {
   withQuery,
 } from "@/lib/api";
 import { presetQueryUrls } from "@/lib/dashboard-prefetch";
+import {
+  readDashboardFilters,
+  writeDashboardFilters,
+} from "@/lib/dashboard-filter-storage";
 import { GitCompareArrows } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -31,7 +35,20 @@ export function DashboardOverview() {
   const { start: startDate, end: endDate, setRange } = useDashboardDateRange();
   const [teamId, setTeamId] = useState("");
   const [memberId, setMemberId] = useState("");
+  const [filtersReady, setFiltersReady] = useState(false);
   const [coverageOpen, setCoverageOpen] = useState(false);
+
+  useEffect(() => {
+    const stored = readDashboardFilters();
+    setTeamId(stored.teamId);
+    setMemberId(stored.memberId);
+    setFiltersReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    writeDashboardFilters({ teamId, memberId });
+  }, [teamId, memberId, filtersReady]);
 
   const today = isoDateInZone();
   const overview = useQuery<DashboardOverviewData>(
@@ -69,7 +86,13 @@ export function DashboardOverview() {
 
   const memberOptions = view?.filters.members ?? EMPTY_FILTERS;
   const memberIdsKey = memberOptions.map((member) => member.id).join("\n");
-  if (memberId && memberIdsKey && !memberOptions.some((member) => member.id === memberId)) {
+  // Only clear after options have loaded — avoid wiping a restored selection during fetch.
+  if (
+    filtersReady &&
+    memberId &&
+    memberIdsKey &&
+    !memberOptions.some((member) => member.id === memberId)
+  ) {
     setMemberId("");
   }
 

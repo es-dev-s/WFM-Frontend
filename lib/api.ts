@@ -212,6 +212,11 @@ export type DashboardSummary = {
   avgWorkHours: string;
   /** Combined earliest first-punch average (one per person). */
   avgClockIn: string;
+  /**
+   * Mean |Bio↔Tivazo| lag across paired check-in gaps (Bio in → Tivazo on)
+   * and check-out gaps (Tivazo off → Bio out).
+   */
+  avgSourceGap: string;
   biomaticPresent: number;
   bioPresent: number;
   bioTotal: number;
@@ -285,8 +290,12 @@ export type DashboardRosterPerson = {
   lastScreenshot: string;
   trackedSeconds: number;
   trackedLabel: string;
-  /** Present person-days when roster row is range-aggregated (Tivazo). */
+  /** Tracked Present person-days when roster row is range-aggregated (Tivazo). */
   presentDays?: number;
+  /** Present status days in range (for ranking); may exceed presentDays when some Present days have no tracked time. */
+  attendedDays?: number;
+  /** Absent (non-rest) person-days when roster row is range-aggregated. */
+  absentDays?: number;
   designation: string;
   joinDate: string;
   date?: string;
@@ -358,6 +367,8 @@ export type PunchLane = {
 export type PunchCompare = {
   checkIn: PunchLane;
   checkOut: PunchLane;
+  /** Combined mean absolute Bio↔Tivazo lag (check-in + check-out pairs). */
+  avgGap: string;
 };
 
 export type ClockSource = "biometrics" | "tivazo";

@@ -147,6 +147,7 @@ export function DashboardClockIns({
   const singleDay = Boolean(
     startDate && endDate && dayKey(startDate) === dayKey(endDate),
   );
+  const singleMember = Boolean((personId || memberId).trim());
   const personOptions = useMemo(
     () =>
       people
@@ -605,100 +606,102 @@ export function DashboardClockIns({
           </Link>
       ) : null}
 
-      <div className="smp-clockins-chips" role="group" aria-label="Clock-in status">
-        <Chip
-          label="Present"
-          hint={period === "range" ? "Unique Present in range" : "Status Present"}
-          value={present.length}
-          tone="present"
-          active={peopleSpec?.id === "present"}
-          onOpen={() =>
-            openChip(
-              "present",
-              `${sourceName} · Present`,
-              period === "range"
-                ? "Unique Present people in this range"
-                : "Same Present rule as Biometrics / Tivazo cards",
-              present,
-            )
-          }
-        />
-        <Chip
-          label="On time"
-          hint="In by 7:15"
-          value={onTime.length}
-          tone="ok"
-          active={peopleSpec?.id === "on-time"}
-          onOpen={() => openChip("on-time", `${sourceName} · On time`, "In by 7:15", onTime)}
-        />
-        <Chip
-          label="Late"
-          hint="After 7:15"
-          value={late.length}
-          tone="late"
-          active={peopleSpec?.id === "late"}
-          onOpen={() => openChip("late", `${sourceName} · Late`, "After 7:15", late)}
-        />
-        <Chip
-          label="Early leave"
-          hint="Out before 3:00"
-          value={early.length}
-          tone="early"
-          active={peopleSpec?.id === "early"}
-          onOpen={() => openChip("early", `${sourceName} · Early leave`, "Out before 3:00", early)}
-        />
-        <Chip
-          label="Full day"
-          hint="In by 7:15 · till 3:00"
-          value={fullDay.length}
-          active={peopleSpec?.id === "full-day"}
-          onOpen={() => openChip("full-day", `${sourceName} · Full day`, "Till 3:00", fullDay)}
-        />
-      </div>
+      {/* Team/office rollups only — single-member focus already has spotlight + period stats. */}
+      {!singleMember ? (
+        <>
+          <div className="smp-clockins-chips" role="group" aria-label="Clock-in status">
+            <Chip
+              label="Present"
+              hint={period === "range" ? "Unique Present in range" : "Status Present"}
+              value={present.length}
+              tone="present"
+              active={peopleSpec?.id === "present"}
+              onOpen={() =>
+                openChip(
+                  "present",
+                  `${sourceName} · Present`,
+                  period === "range"
+                    ? "Unique Present people in this range"
+                    : "Same Present rule as Biometrics / Tivazo cards",
+                  present,
+                )
+              }
+            />
+            <Chip
+              label="On time"
+              hint="In by 7:15"
+              value={onTime.length}
+              tone="ok"
+              active={peopleSpec?.id === "on-time"}
+              onOpen={() => openChip("on-time", `${sourceName} · On time`, "In by 7:15", onTime)}
+            />
+            <Chip
+              label="Late"
+              hint="After 7:15"
+              value={late.length}
+              tone="late"
+              active={peopleSpec?.id === "late"}
+              onOpen={() => openChip("late", `${sourceName} · Late`, "After 7:15", late)}
+            />
+            <Chip
+              label="Early leave"
+              hint="Out before 3:00"
+              value={early.length}
+              tone="early"
+              active={peopleSpec?.id === "early"}
+              onOpen={() => openChip("early", `${sourceName} · Early leave`, "Out before 3:00", early)}
+            />
+            <Chip
+              label="Full day"
+              hint="In by 7:15 · till 3:00"
+              value={fullDay.length}
+              active={peopleSpec?.id === "full-day"}
+              onOpen={() => openChip("full-day", `${sourceName} · Full day`, "Till 3:00", fullDay)}
+            />
+          </div>
 
-      <div className="smp-clockins-board" data-absent={absent.length}>
-        <DashboardClockInsHeatmap
-          people={visible}
-          source={source}
-          kind="in"
-          startDate={startDate || day}
-          endDate={endDate || day}
-          sourceName={sourceName}
-          teamId={teamId}
-          memberId={personId || memberId}
-          onDayOpen={openDayModal}
-          active={peopleSpec?.id === "presence" || dayModal != null}
-          onOpen={() => {
-            if (singleDay && focusedDay) {
-              openDayModal(focusedDay, "present");
-              return;
-            }
-            setDayModal(null);
-            setPeopleSpec({
-              id: "presence",
-              source: source === "all" ? "combined" : source === "bio" ? "bio" : "tivazo",
-              title: `Presence · ${sourceName}`,
-              hint: "Present people in this view (same rule as the Present chip)",
-              focus: focusPeople(present),
-              pageHref: peopleHref(present, "present"),
-            });
-          }}
-        />
-        <div className="smp-clockins-legend">
-          <span data-tone="ok">On time</span>
-          <span data-tone="late">Late in</span>
-          <span data-tone="early">Left early</span>
-          <span className="smp-clockins-legend__hint">
-            {spotlight || personId || memberId
-              ? singleDay
-                ? "Showing this person’s day · click Present / Not present for detail"
-                : "Showing this person’s week · click a day for their detail"
-              : singleDay
-                ? "Click Present or Not present to open people · Weekly off and leave excluded"
-                : "Click a day to open people in a modal · Weekly off and leave excluded"}
-          </span>
-        </div>
-      </div>
+          <div className="smp-clockins-board" data-absent={absent.length}>
+            <DashboardClockInsHeatmap
+              people={visible}
+              source={source}
+              kind="in"
+              startDate={startDate || day}
+              endDate={endDate || day}
+              sourceName={sourceName}
+              teamId={teamId}
+              memberId={personId || memberId}
+              onDayOpen={openDayModal}
+              active={peopleSpec?.id === "presence" || dayModal != null}
+              onOpen={() => {
+                if (singleDay && focusedDay) {
+                  openDayModal(focusedDay, "present");
+                  return;
+                }
+                setDayModal(null);
+                setPeopleSpec({
+                  id: "presence",
+                  source: source === "all" ? "combined" : source === "bio" ? "bio" : "tivazo",
+                  title: `Presence · ${sourceName}`,
+                  hint: "Present people in this view (same rule as the Present chip)",
+                  focus: focusPeople(present),
+                  pageHref: peopleHref(present, "present"),
+                });
+              }}
+            />
+            <div className="smp-clockins-legend">
+              <span data-tone="ok">On time</span>
+              <span data-tone="late">Late in</span>
+              <span data-tone="early">Left early</span>
+              <span className="smp-clockins-legend__hint">
+                {singleDay
+                  ? "Click Present or Not present to open people · Weekly off and leave excluded"
+                  : "Click a day to open people in a modal · Weekly off and leave excluded"}
+              </span>
+            </div>
+          </div>
+        </>
+      ) : null}
+
       <DashboardPeopleModal
         open={Boolean(peopleSpec)}
         spec={peopleSpec}

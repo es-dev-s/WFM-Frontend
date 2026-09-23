@@ -17,7 +17,9 @@ export function defaultDashboardRange() {
 function readStoredRange(today: string): { start: string; end: string } | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.sessionStorage.getItem(RANGE_STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(RANGE_STORAGE_KEY) ||
+      window.sessionStorage.getItem(RANGE_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { start?: string; end?: string };
     return normalizeDateRange(parsed.start || "", parsed.end || "", today);
@@ -29,7 +31,10 @@ function readStoredRange(today: string): { start: string; end: string } | null {
 function writeStoredRange(start: string, end: string) {
   if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify({ start, end }));
+    const payload = JSON.stringify({ start, end });
+    window.localStorage.setItem(RANGE_STORAGE_KEY, payload);
+    // Drop legacy session copy so logout / new sessions keep one source of truth.
+    window.sessionStorage.removeItem(RANGE_STORAGE_KEY);
   } catch {
     /* ignore quota / private mode */
   }

@@ -317,6 +317,14 @@ function formatDurationMinutes(totalMinutes: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+/** Mean absolute Bio↔Tivazo lag across check-in and check-out pair samples. */
+export function avgSourceGapLabel(inGaps: number[], outGaps: number[]): string {
+  const samples = [...inGaps, ...outGaps].map((value) => Math.abs(value));
+  if (!samples.length) return "—";
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  return formatDurationMinutes(Math.round(mean));
+}
+
 function punchMoment(values: number[]) {
   const median = medianOf(values);
   if (median == null) return { time: "—", people: 0 };
@@ -510,6 +518,7 @@ export function buildPunchCompareBundle(
             : punchGap(outGaps, "Biometrics after Tivazo", "Biometrics before Tivazo"),
         overall: punchMoment(outOverall),
       },
+      avgGap: avgSourceGapLabel(inGaps, outGaps),
     },
     focus,
   };
@@ -527,16 +536,35 @@ function rankingTeam(person: DashboardRosterPerson): string {
   return person.teams.find((value) => value && value !== "unassigned") || "Unassigned";
 }
 
+function formatDayCount(days: number): string {
+  const n = Math.max(0, Math.round(days));
+  return n === 1 ? "1 day" : `${n} days`;
+}
+
+function rankingPresentDays(person: DashboardRosterPerson): number {
+  if ((person.attendedDays ?? 0) > 0) return person.attendedDays!;
+  if ((person.presentDays ?? 0) > 0) return person.presentDays!;
+  return person.attendance.toLowerCase() === "present" ? 1 : 0;
+}
+
+function rankingAbsentDays(person: DashboardRosterPerson): number {
+  if ((person.absentDays ?? 0) > 0) return person.absentDays!;
+  return person.attendance.toLowerCase() === "present" ? 0 : 1;
+}
+
 function leaderValue(person: DashboardRosterPerson, metric: TrendMetric): string {
   const present = person.attendance.toLowerCase() === "present";
-  if (metric === "present") return titleStatus(person.attendance) || (present ? "Present" : "Absent");
+  if (metric === "present") return formatDayCount(rankingPresentDays(person));
   if (metric === "attendance") return present ? "100%" : "0%";
   return utilization(person.trackedSeconds);
 }
 
 function buildLeaderboard(people: DashboardRosterPerson[], metric: TrendMetric) {
   const ranked = [...people].sort((left, right) => {
-    if (metric === "present" || metric === "attendance") {
+    if (metric === "present") {
+      const byDays = rankingPresentDays(right) - rankingPresentDays(left);
+      if (byDays !== 0) return byDays;
+    } else if (metric === "attendance") {
       const a = left.attendance.toLowerCase() === "present" ? 1 : 0;
       const b = right.attendance.toLowerCase() === "present" ? 1 : 0;
       if (b !== a) return b - a;
@@ -562,6 +590,13 @@ function buildLeaderboard(people: DashboardRosterPerson[], metric: TrendMetric) 
       const live = person.status.toLowerCase();
       return day !== "Present" || live === "idle" || live === "offline" || person.trackedSeconds <= 0;
     })
+    .sort((left, right) => {
+      if (metric === "present") {
+        const byAbsent = rankingAbsentDays(right) - rankingAbsentDays(left);
+        if (byAbsent !== 0) return byAbsent;
+      }
+      return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+    })
     .map((person) => {
       const day = normalizeDayStatus(person.attendance);
       const live = person.status.toLowerCase();
@@ -578,7 +613,10 @@ function buildLeaderboard(people: DashboardRosterPerson[], metric: TrendMetric) 
         team: rankingTeam(person),
         status: day || titleStatus(person.status) || "Absent",
         reason,
-        value: leaderValue(person, metric),
+        value:
+          metric === "present"
+            ? formatDayCount(rankingAbsentDays(person))
+            : leaderValue(person, metric),
       };
     });
   return { leaders, attention };
@@ -750,7 +788,9 @@ export function scopeDashboard(
 
   const { bio: visibleBio, tivazo: visibleTivazo } = selectPeople(overview, teamId, memberId);
   const allTeams = [...overview.filters.teams, ...overview.filters.supervisors];
-  const members = [...visibleTivazo, ...visibleBio]
+  // Keep the Member filter populated with everyone in scope (team or all), not only the selected member.
+  const { bio: filterBio, tivazo: filterTivazo } = selectPeople(overview, teamId, "");
+  const members = [...filterTivazo, ...filterBio]
     .filter((row, index, list) => list.findIndex((item) => keyOf(item) === keyOf(row)) === index)
     .map((row) => ({ id: keyOf(row) || row.id, label: row.name }))
     .sort((left, right) => left.label.localeCompare(right.label));
@@ -790,6 +830,7 @@ export function scopeDashboard(
       tivazoAvgWorkHours: tivazo.avgWorkHours,
       bioClockIn: hourly.compare.checkIn.first.time,
       tivazoClockIn: hourly.compare.checkIn.second.time,
+      avgSourceGap: hourly.compare.avgGap,
     },
     filters: {
       ...overview.filters,

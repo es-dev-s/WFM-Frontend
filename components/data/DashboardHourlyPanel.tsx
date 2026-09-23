@@ -4,7 +4,6 @@ import { DashboardClockIns } from "@/components/data/DashboardClockIns";
 import { DashboardPeriodDays } from "@/components/data/DashboardPeriodDays";
 import { DashboardPunchCompare } from "@/components/data/DashboardPunchCompare";
 import { QueryState } from "@/components/data/QueryState";
-import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import {
   type DailyLogRow,
   type DashboardRosterPerson,
@@ -19,7 +18,6 @@ import { addDaysISO, formatDisplayDate, formatRangeLabel, isoDateInZone } from "
 import { createIdentityIndex, identityCanonical } from "@/lib/identity";
 import { normalizeDayStatus } from "@/lib/server/metrics";
 import { averageWorkdayTimes, dailyLogToRoster, mergeWorkdayPeople, parseClockMinutes } from "@/lib/workday-clock";
-import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 function stampDate(rows: DashboardRosterPerson[], date: string): DashboardRosterPerson[] {
@@ -164,7 +162,8 @@ export function DashboardHourlyPanel({
     ? formatRangeLabel(viewStart, viewEnd)
     : formatDisplayDate(viewStart);
   const dayFocus = !viewingRange;
-  const needPeriodDays = dashboardRange && Boolean(teamId || memberId);
+  const hasScope = Boolean(teamId || memberId);
+  const needPeriodDays = dashboardRange && hasScope;
 
   const logs = useQuery<ListPage<DailyLogRow>>(
     dayFocus
@@ -283,8 +282,6 @@ export function DashboardHourlyPanel({
       ),
     [roster.bio, roster.tivazo, source, today],
   );
-  const sourceLabel =
-    source === "bio" ? "Biometrics" : source === "tivazo" ? "Tivazo" : "Combined";
 
   const dayLoading =
     dayFocus &&
@@ -294,12 +291,6 @@ export function DashboardHourlyPanel({
   const dayError = logs.error || activities.error || error;
   const overallIn = kpis.inTime;
   const overallOut = kpis.outTime;
-  const minDay = dashboardRange ? startDate : undefined;
-  const maxDay = dashboardRange ? (endDate < today ? endDate : today) : today;
-  const prevDay = addDaysISO(viewingRange ? viewEnd : viewStart, -1);
-  const nextDay = addDaysISO(viewingRange ? viewEnd : viewStart, 1);
-  const canPrev = !minDay || prevDay >= minDay;
-  const canNext = nextDay <= (maxDay || today);
 
   return (
     <section
@@ -307,82 +298,16 @@ export function DashboardHourlyPanel({
       aria-label="Daily clock-ins"
     >
       <header className="smp-panel__head smp-dashboard-hourly-head">
-        <div className="smp-dashboard-hourly-copy">
-          <h2 className="smp-panel__title">Daily clock-ins</h2>
-          <p className="smp-panel__meta">
-            <span>{teamLabel}</span>
-            <span>Office 07:00–15:00</span>
-            <span>Late after 07:15</span>
-            {viewingRange ? <span>Work-day medians</span> : null}
-            {needPeriodDays && viewingRange ? <span>Every day</span> : null}
-            <span>{sourceLabel}</span>
+        <h2 className="smp-panel__title">Daily clock-ins</h2>
+        <div className="smp-clockins-kpis" aria-label="Average clock times">
+          <p className="smp-clockins-kpi" data-empty={overallIn === "—" ? "true" : undefined}>
+            <span>Clock in</span>
+            <strong>{overallIn}</strong>
           </p>
-        </div>
-        <div className="smp-dashboard-hourly-tools">
-          <div className="smp-clockins-day">
-            {dashboardRange ? (
-              <button
-                type="button"
-                className="smp-clockins-range"
-                data-active={viewingRange ? "true" : "false"}
-                onClick={() => setFocus("range")}
-              >
-                All days
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="smp-icon-btn"
-              aria-label="Previous day"
-              disabled={!canPrev}
-              onClick={() => canPrev && setFocus(prevDay)}
-            >
-              <ChevronLeft size={16} strokeWidth={1.75} />
-            </button>
-            <div className="smp-clockins-date">
-              <DateRangePicker
-                variant="dashboard"
-                showPresets={false}
-                start={viewStart}
-                end={viewEnd}
-                max={today}
-                onChange={(nextStart, nextEnd) => {
-                  if (dashboardRange && nextStart === startDate && nextEnd === endDate) {
-                    setFocus("range");
-                    return;
-                  }
-                  let day = nextStart === nextEnd ? nextStart : nextEnd;
-                  if (dashboardRange) {
-                    if (day < startDate) day = startDate;
-                    if (day > endDate) day = endDate;
-                  }
-                  setFocus(day);
-                }}
-              />
-              <span className="smp-clockins-date__label">{periodLabel}</span>
-            </div>
-            <button
-              type="button"
-              className="smp-icon-btn"
-              aria-label="Next day"
-              disabled={!canNext}
-              onClick={() => canNext && setFocus(nextDay)}
-            >
-              <ChevronRight size={16} strokeWidth={1.75} />
-            </button>
-          </div>
-          <div className="smp-clockins-kpis">
-            <div className="smp-clockins-kpi" data-empty={overallIn === "—" ? "true" : undefined}>
-              <span>{source === "all" ? "Typical in" : `${sourceLabel} in`}</span>
-              <strong>{overallIn}</strong>
-              <em>{overallIn === "—" ? "Waiting on punches" : "Median arrival"}</em>
-            </div>
-            <div className="smp-clockins-kpi" data-empty={overallOut === "—" ? "true" : undefined}>
-              <span>{source === "all" ? "Typical out" : `${sourceLabel} out`}</span>
-              <strong>{overallOut}</strong>
-              <em>{overallOut === "—" ? "No confirmed outs" : "Median departure"}</em>
-            </div>
-          </div>
+          <p className="smp-clockins-kpi" data-empty={overallOut === "—" ? "true" : undefined}>
+            <span>Clock out</span>
+            <strong>{overallOut}</strong>
+          </p>
         </div>
       </header>
 
@@ -403,11 +328,6 @@ export function DashboardHourlyPanel({
         <QueryState loading error={null} label="daily clock-ins" />
       ) : (
         <>
-          {viewingRange && !needPeriodDays ? (
-            <p className="smp-period-days__hint">
-              Choose a group or member to see Bio and Tivazo for every day in this range.
-            </p>
-          ) : null}
           {viewingRange && needPeriodDays ? (
             <DashboardPeriodDays
               bioLogs={logs.data?.items ?? []}
