@@ -3,7 +3,6 @@
 import { PersonCell } from "@/components/data/cells";
 import { Delta, StatusPill } from "@/components/data/StatusPill";
 import type { AttentionItem, LeaderRow } from "@/lib/api";
-import { dashboardSourceHref } from "@/lib/dashboard-links";
 import { Search, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -25,7 +24,7 @@ function matchesRank(
 
 export function RankMemberRow({
   rank,
-  id,
+  id: _id,
   name,
   email,
   team,
@@ -34,6 +33,7 @@ export function RankMemberRow({
   positive,
   status,
   reason,
+  href,
 }: {
   rank: number;
   id?: string;
@@ -45,14 +45,14 @@ export function RankMemberRow({
   positive?: boolean;
   status?: string;
   reason?: string;
+  href?: string;
 }) {
   const showScore =
     Boolean(value) &&
     value !== "00:00:00" &&
     value !== "—" &&
     (!status || value.toLowerCase() !== status.toLowerCase());
-  const href = dashboardSourceHref("/tivazo", "total", { memberId: email || id || "" });
-  const inner = (
+  const body = (
     <>
       <span className="smp-rank__index" aria-hidden="true">
         {rank}
@@ -73,12 +73,12 @@ export function RankMemberRow({
   );
   return (
     <li className="smp-rank__row-wrap">
-      {email || id ? (
-        <Link href={href} className="smp-rank__row" data-clickable="true">
-          {inner}
+      {href ? (
+        <Link href={href} className="smp-rank__row" data-clickable="true" prefetch={false}>
+          {body}
         </Link>
       ) : (
-        <div className="smp-rank__row">{inner}</div>
+        <div className="smp-rank__row">{body}</div>
       )}
     </li>
   );
@@ -92,6 +92,7 @@ export function DashboardRankingModal({
   attention,
   view,
   showStatus = false,
+  memberHref,
   onClose,
 }: {
   open: boolean;
@@ -101,6 +102,7 @@ export function DashboardRankingModal({
   attention: AttentionItem[];
   view: "leaders" | "attention";
   showStatus?: boolean;
+  memberHref?: (id: string, email: string) => string;
   onClose: () => void;
 }) {
   const titleId = useId();
@@ -219,6 +221,7 @@ export function DashboardRankingModal({
                       value={row.value}
                       reason={row.reason}
                       status={row.status}
+                      href={memberHref?.(row.id, row.email)}
                     />
                   );
                 })
@@ -236,6 +239,7 @@ export function DashboardRankingModal({
                       delta={row.delta}
                       positive={row.positive}
                       status={showStatus ? row.status : undefined}
+                      href={memberHref?.(row.id, row.email)}
                     />
                   );
                 })}

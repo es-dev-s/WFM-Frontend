@@ -148,6 +148,8 @@ button:disabled {
 html,
 body,
 .smp-main,
+.smp-main__inner,
+.smp-stage--pad.smp-dashboard,
 .smp-table__scroller,
 .smp-toolbar,
 .smp-sidebar__scroll,

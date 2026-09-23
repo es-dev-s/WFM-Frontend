@@ -21,7 +21,7 @@ import {
   withQuery,
 } from "@/lib/api";
 import { isoDateInZone } from "@/lib/datetime";
-import { filterTivazoRows, summaryFromTivazoRows, matchesPerson } from "@/lib/list-scope";
+import { filterTivazoRows, summaryFromTivazoRows, matchesPerson, uniqueLatestPeople } from "@/lib/list-scope";
 import { normalizeDayStatus } from "@/lib/server/metrics";
 import { useEffect, useMemo, useState } from "react";
 
@@ -41,6 +41,7 @@ export default function TivazoPage() {
   const [query, setQuery] = useState("");
   const [memberId, setMemberId] = useState("");
   const [emailScope, setEmailScope] = useState<string[]>([]);
+  const [idScope, setIdScope] = useState<string[]>([]);
   const [card, setCard] = useState<TivazoCardId>("totalMembers");
   const [inspector, setInspector] = useState<Inspector | null>(null);
 
@@ -52,12 +53,17 @@ export default function TivazoPage() {
       .split(",")
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean);
+    const ids = (params.get("ids") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
     const view = params.get("view") || "";
     const start = params.get("startDate") || "";
     const end = params.get("endDate") || "";
     if (fromGroup) setGroup((current) => current || fromGroup);
     if (member) setMemberId(member);
     if (emails.length) setEmailScope(emails);
+    if (ids.length) setIdScope(ids);
     if (start) setStartDate(start);
     if (end) setEndDate(end);
     if (view === "present") setCard("presentMembers");
@@ -106,23 +112,29 @@ export default function TivazoPage() {
     );
   }, [groups.data?.groups]);
   const peopleScope = useMemo(
-    () => ({ memberId, emails: emailScope }),
-    [memberId, emailScope],
+    () => ({ memberId, emails: emailScope, ids: idScope }),
+    [memberId, emailScope, idScope],
   );
+  const pinnedPeople = Boolean(idScope.length || (!memberId && emailScope.length));
   const scopedRows = useMemo(
     () => filterTivazoRows(activities.data?.items ?? [], group, query, undefined, catalog, peopleScope),
     [activities.data?.items, group, query, catalog, peopleScope],
   );
   useEffect(() => {
-    if (!memberId) return;
+    if (!memberId || pinnedPeople) return;
     const row = scopedRows.find((item) => matchesPerson(item, memberId));
     if (!row) return;
     setInspector({ view: "detail", row, fromPresent: false });
-  }, [memberId, scopedRows]);
-  const items = useMemo(
-    () => filterTivazoRows(scopedRows, "", "", peopleStatus, catalog),
-    [scopedRows, peopleStatus, catalog],
-  );
+  }, [memberId, scopedRows, pinnedPeople]);
+  const items = useMemo(() => {
+    // Chart pins the exact Present people; keep that list so hover count matches the table.
+    const filtered = pinnedPeople
+      ? scopedRows
+      : peopleStatus
+        ? filterTivazoRows(scopedRows, "", "", peopleStatus, catalog)
+        : scopedRows;
+    return uniqueLatestPeople(filtered);
+  }, [scopedRows, peopleStatus, catalog, pinnedPeople]);
   const summary = useMemo(() => summaryFromTivazoRows(scopedRows), [scopedRows]);
   const presentRows = useMemo(
     () => scopedRows.filter((row) => normalizeDayStatus(row.status) === "Present"),
@@ -167,6 +179,8 @@ export default function TivazoPage() {
             selected={card}
             onSelect={(next) => {
               setInspector(null);
+              setIdScope([]);
+              setEmailScope([]);
               setCard((current) => (current === next ? "totalMembers" : next));
             }}
           />
@@ -184,29 +198,38 @@ export default function TivazoPage() {
             {
               label: "Present",
               value: String(summary.presentMembers || "—"),
-              onClick: () =>
+              onClick: () => {
+                setIdScope([]);
+                setEmailScope([]);
                 setCard((current) =>
                   current === "presentMembers" ? "totalMembers" : "presentMembers",
-                ),
+                );
+              },
               active: card === "presentMembers",
             },
             {
               label: "Teams",
               value: String(catalog.length),
-              onClick: () =>
-                setCard((current) => (current === "teams" ? "totalMembers" : "teams")),
+              onClick: () => {
+                setIdScope([]);
+                setEmailScope([]);
+                setCard((current) => (current === "teams" ? "totalMembers" : "teams"));
+              },
               active: showTeams,
             },
             {
               label: "Absent",
               value: String(summary.absentMembers || "—"),
-              onClick: () =>
+              onClick: () => {
+                setIdScope([]);
+                setEmailScope([]);
                 setCard((current) =>
                   current === "absentMembers" ? "totalMembers" : "absentMembers",
-                ),
+                );
+              },
               active: card === "absentMembers",
             },
-            { label: "Records", value: String(showTeams ? teamRows.length : total || "—") },
+            { label: showTeams ? "Teams" : "People", value: String(showTeams ? teamRows.length : total || "—") },
           ]}
         >
           <div className="smp-filters--inline">
@@ -225,7 +248,11 @@ export default function TivazoPage() {
               allLabel="All groups"
               options={catalog}
               searchable
-              onChange={setGroup}
+              onChange={(next) => {
+                setGroup(next);
+                setIdScope([]);
+                setEmailScope([]);
+              }}
             />
             <FilterSearch
               value={query}

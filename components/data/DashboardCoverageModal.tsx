@@ -2,7 +2,9 @@
 
 import { StatusPill } from "@/components/data/StatusPill";
 import type { CoverageGaps, CoveragePerson } from "@/lib/api";
+import { biomaticHref, emailsParam, tivazoHref } from "@/lib/href";
 import { CheckCircle2, Fingerprint, GitCompareArrows, Loader2, Search, Users, X } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -15,11 +17,11 @@ function matchesPerson(person: CoveragePerson, needle: string): boolean {
   );
 }
 
-function CoveragePersonRow({ person }: { person: CoveragePerson }) {
+function CoveragePersonRow({ person, href }: { person: CoveragePerson; href?: string }) {
   const initial = (person.name || "?").slice(0, 1).toUpperCase();
   const email = person.email.trim();
-  return (
-    <li className="smp-coverage-row">
+  const body = (
+    <>
       <span className="smp-person" data-size="md">
         <span className="smp-person__mark" aria-hidden>
           {initial}
@@ -38,6 +40,17 @@ function CoveragePersonRow({ person }: { person: CoveragePerson }) {
         {person.team || "Unassigned"}
       </span>
       <StatusPill value={person.status} />
+    </>
+  );
+  return (
+    <li>
+      {href ? (
+        <Link href={href} className="smp-coverage-row" data-clickable="true" prefetch={false}>
+          {body}
+        </Link>
+      ) : (
+        <div className="smp-coverage-row">{body}</div>
+      )}
     </li>
   );
 }
@@ -50,6 +63,7 @@ function CoverageColumn({
   people,
   total,
   searching,
+  personHref,
 }: {
   source: "biometrics" | "tivazo";
   icon: typeof Fingerprint;
@@ -58,6 +72,7 @@ function CoverageColumn({
   people: CoveragePerson[];
   total: number;
   searching: boolean;
+  personHref?: (person: CoveragePerson) => string;
 }) {
   return (
     <section className="smp-coverage-col" data-source={source}>
@@ -84,10 +99,13 @@ function CoverageColumn({
         </p>
       ) : (
         <ul className="smp-coverage-list">
-          {people.map((person) => (
+          {[...people]
+            .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
+            .map((person) => (
             <CoveragePersonRow
               key={`${source}:${person.id}:${person.email}`}
               person={person}
+              href={personHref?.(person)}
             />
           ))}
         </ul>
@@ -100,11 +118,15 @@ export function DashboardCoverageModal({
   open,
   coverage,
   loading = false,
+  startDate,
+  endDate,
   onClose,
 }: {
   open: boolean;
   coverage: CoverageGaps | null;
   loading?: boolean;
+  startDate?: string;
+  endDate?: string;
   onClose: () => void;
 }) {
   const titleId = useId();
@@ -309,6 +331,15 @@ export function DashboardCoverageModal({
               people={visibleBio}
               total={bioOnly.length}
               searching={searching}
+              personHref={(person) =>
+                biomaticHref({
+                  view: "members",
+                  memberId: person.id,
+                  emails: emailsParam([person.email]),
+                  startDate,
+                  endDate,
+                })
+              }
             />
             <CoverageColumn
               source="tivazo"
@@ -322,6 +353,14 @@ export function DashboardCoverageModal({
               people={visibleTivazo}
               total={tivazoOnly.length}
               searching={searching}
+              personHref={(person) =>
+                tivazoHref({
+                  memberId: person.id,
+                  emails: emailsParam([person.email]),
+                  startDate,
+                  endDate,
+                })
+              }
             />
           </div>
         )}

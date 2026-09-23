@@ -1,4 +1,4 @@
-import { APP_TIMEZONE, isoDateInZone } from "@/lib/datetime";
+import { APP_TIMEZONE, isoDateInZone, normalizeDateRange } from "@/lib/datetime";
 
 export const BIO_ORIGIN =
   process.env.BIO_ORIGIN?.replace(/\/$/, "") || "http://127.0.0.1:8091";
@@ -39,10 +39,11 @@ export function readInt(url: URL, key: string, fallback: number): number {
 }
 
 export function dateRange(url: URL): { start: string; end: string } {
-  const today = todayInAppZone();
-  const start = readParam(url, "startDate", "start_date") || today;
-  const end = readParam(url, "endDate", "end_date") || start;
-  return { start, end };
+  return normalizeDateRange(
+    readParam(url, "startDate", "start_date"),
+    readParam(url, "endDate", "end_date"),
+    todayInAppZone(),
+  );
 }
 
 export function withParams(

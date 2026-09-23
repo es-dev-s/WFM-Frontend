@@ -42,6 +42,7 @@ export function TrendChart({
 }) {
   const gradientId = useId().replace(/:/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
+  const rafPickRef = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   const seriesKey = `${metric}:${points.map((point) => `${point.day}:${point.value}`).join(",")}`;
@@ -97,16 +98,23 @@ export function TrendChart({
   const pickIndex = useCallback(
     (clientX: number) => {
       if (!geometry || !svgRef.current) return;
-      const nearest = pickNearestIndex(
-        clientX,
-        svgRef.current.getBoundingClientRect(),
-        VIEW_W,
-        geometry.coords.map((point) => point.x),
-      );
-      setActiveIndex((prev) => (prev === nearest ? prev : nearest));
+      const svg = svgRef.current;
+      const xs = geometry.coords.map((point) => point.x);
+      if (rafPickRef.current != null) cancelAnimationFrame(rafPickRef.current);
+      rafPickRef.current = requestAnimationFrame(() => {
+        rafPickRef.current = null;
+        const nearest = pickNearestIndex(clientX, svg.getBoundingClientRect(), VIEW_W, xs);
+        setActiveIndex((prev) => (prev === nearest ? prev : nearest));
+      });
     },
     [geometry],
   );
+
+  useEffect(() => {
+    return () => {
+      if (rafPickRef.current != null) cancelAnimationFrame(rafPickRef.current);
+    };
+  }, []);
 
   if (!geometry) {
     return (
@@ -142,10 +150,6 @@ export function TrendChart({
           role="img"
           aria-label={`${label} trend`}
           onMouseMove={(event) => pickIndex(event.clientX)}
-          onTouchMove={(event) => {
-            const touch = event.touches[0];
-            if (touch) pickIndex(touch.clientX);
-          }}
         >
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">

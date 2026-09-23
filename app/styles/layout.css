@@ -821,9 +821,16 @@
   container-name: page;
 }
 
+/* Fill pages (Home dashboard, tables): main__inner does not scroll — the stage does. */
 .smp-main__inner:has(.smp-page-stack--fill) {
   overflow: hidden;
+  overscroll-behavior: none;
 }
+
+
+
+
+
 
 .smp-page-fallback {
   display: flex;

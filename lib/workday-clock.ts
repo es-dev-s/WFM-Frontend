@@ -1,4 +1,6 @@
 import type { DailyLogRow, DashboardRosterPerson } from "@/lib/api";
+import { createIdentityIndex, identityCanonical } from "@/lib/identity";
+import { isRestStatus, normalizeDayStatus, trackedSecondsOf } from "@/lib/server/metrics";
 
 export const WORKDAY_START_MIN = 7 * 60;
 export const LATE_AFTER_MIN = 7 * 60 + 15;
@@ -23,6 +25,7 @@ export type WorkdayPerson = {
   email: string;
   team: string;
   designation: string;
+  date: string;
   inLabel: string;
   outLabel: string;
   inMinutes: number | null;
@@ -30,6 +33,17 @@ export type WorkdayPerson = {
   arrival: ArrivalStatus;
   departure: DepartureStatus;
   sources: Array<"bio" | "tivazo">;
+  /** Matches Biometrics/Tivazo Present cards (status Present, punch fallback). */
+  bioPresent: boolean;
+  tivazoPresent: boolean;
+  bioInLabel: string;
+  bioOutLabel: string;
+  tivazoInLabel: string;
+  tivazoOutLabel: string;
+  bioArrival: ArrivalStatus;
+  bioDeparture: DepartureStatus;
+  tivazoArrival: ArrivalStatus;
+  tivazoDeparture: DepartureStatus;
 };
 
 export type ClockSlot = {
@@ -42,10 +56,141 @@ export type ClockSlot = {
   total: number;
 };
 
+export type ClockGapTone = "same" | "later" | "earlier" | "missing";
+
+export type ClockGap = {
+  minutes: number | null;
+  signed: number | null;
+  label: string;
+  note: string;
+  tone: ClockGapTone;
+  fromLabel: string;
+  toLabel: string;
+};
+
+export function parseClockMinutes(label: string): number | null {
+  return parseMinutes(label);
+}
+
+/** Prefer tracked seconds; else a completed in→out span (either source). Null = still in / unknown. */
+export function completedWorkSeconds(input: {
+  tracked?: unknown;
+  trackedAlt?: unknown;
+  inTime?: string;
+  outTime?: string;
+  inTimeAlt?: string;
+  outTimeAlt?: string;
+}): number | null {
+  const tracked = trackedSecondsOf(input.tracked) || trackedSecondsOf(input.trackedAlt);
+  if (tracked > 0) return tracked;
+
+  const candidates: Array<[string, string]> = [
+    [String(input.inTime || "").trim(), String(input.outTime || "").trim()],
+    [String(input.inTimeAlt || "").trim(), String(input.outTimeAlt || "").trim()],
+  ];
+  for (const [inn, out] of candidates) {
+    const a = parseClockMinutes(inn);
+    const b = parseClockMinutes(out);
+    if (a == null || b == null) continue;
+    let span = b - a;
+    if (span < 0) span += 24 * 60;
+    if (span > 0) return span * 60;
+  }
+  return null;
+}
+
+
+
+export function signedPunchDelta(from: number, to: number): number {
+  return wrapSignedMinutes(from, to);
+}
+
+function wrapSignedMinutes(from: number, to: number): number {
+  let delta = to - from;
+  if (delta > 720) delta -= 1440;
+  if (delta < -720) delta += 1440;
+  return delta;
+}
+
+export function formatClockDuration(totalMinutes: number, signed = false): string {
+  const rounded = Math.round(totalMinutes);
+  const abs = Math.abs(rounded);
+  if (abs === 0) return "0 min";
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  const body = hours === 0 ? `${minutes} min` : minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+  if (!signed) return body;
+  return rounded > 0 ? `+${body}` : `−${body}`;
+}
+
+export function sourceInLabel(row: DashboardRosterPerson | undefined, source: "bio" | "tivazo"): string {
+  if (!row) return "";
+  return source === "bio"
+    ? String(row.startTime || "").trim()
+    : String(row.clockedIn || row.startTime || "").trim();
+}
+
+export function bioToTivazoInGap(
+  bio?: DashboardRosterPerson,
+  tivazo?: DashboardRosterPerson,
+): ClockGap {
+  const fromLabel = sourceInLabel(bio, "bio");
+  const toLabel = sourceInLabel(tivazo, "tivazo");
+  const from = parseMinutes(fromLabel);
+  const to = parseMinutes(toLabel);
+  if (from == null || to == null) {
+    const note = !bio
+      ? "No Bio record"
+      : !tivazo
+        ? "No Tivazo record"
+        : from == null
+          ? "Bio in-time missing"
+          : "Tivazo in-time missing";
+    return {
+      minutes: null,
+      signed: null,
+      label: "—",
+      note,
+      tone: "missing",
+      fromLabel,
+      toLabel,
+    };
+  }
+  const signed = wrapSignedMinutes(from, to);
+  if (signed === 0) {
+    return {
+      minutes: 0,
+      signed: 0,
+      label: "0 min",
+      note: "Same in-time",
+      tone: "same",
+      fromLabel,
+      toLabel,
+    };
+  }
+  return {
+    minutes: Math.abs(signed),
+    signed,
+    label: formatClockDuration(signed, true),
+    note: signed > 0 ? "Tivazo after Bio" : "Tivazo before Bio",
+    tone: signed > 0 ? "later" : "earlier",
+    fromLabel,
+    toLabel,
+  };
+}
+
+export function medianSignedMinutes(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 function parseMinutes(label: string): number | null {
   const text = label.trim();
   if (!text || text === "—") return null;
-  const match = text.match(/^(\d{1,2})[:.](\d{2})(?::\d{2})?\s*(AM|PM)?/i);
+  const match = text.match(/(\d{1,2})[:.](\d{2})(?::\d{2})?\s*(AM|PM)?/i);
   if (!match) return null;
   let hour = Number(match[1]);
   const minute = Number(match[2]);
@@ -88,6 +233,24 @@ function personKey(row: DashboardRosterPerson): string {
   return row.email.trim().toLowerCase() || row.id;
 }
 
+function personDayKey(row: DashboardRosterPerson): string {
+  const who = personKey(row);
+  const date = row.date?.trim();
+  return date ? `${who}|${date}` : who;
+}
+
+export function rosterPunchMinutes(
+  row: DashboardRosterPerson,
+  which: "in" | "out",
+): number | null {
+  return which === "in" ? bestIn(row) : bestOut(row);
+}
+
+export function rowIsToday(row: DashboardRosterPerson, todayDate: string, undatedIsToday = false): boolean {
+  if (row.date?.trim()) return row.date.trim() === todayDate;
+  return undatedIsToday;
+}
+
 function teamOf(row: DashboardRosterPerson): string {
   return row.teams.find((value) => value && value !== "unassigned") || "Unassigned";
 }
@@ -98,23 +261,89 @@ function stillOnShift(row: DashboardRosterPerson, today: boolean): boolean {
   return status === "active" || status === "tracking" || status === "idle";
 }
 
+function recordedOut(row: DashboardRosterPerson): number | null {
+  return parseMinutes(row.endTime) ?? parseMinutes(row.lastScreenshot);
+}
+
+function confirmedCheckout(
+  row: DashboardRosterPerson,
+  today: boolean,
+  inn: number | null,
+  out: number | null,
+): boolean {
+  if (out == null) return false;
+  if (stillOnShift(row, today)) return false;
+  if (row.source !== "tivazo") return true;
+  if (inn != null) {
+    let span = out - inn;
+    if (span < 0) span += 1440;
+    if (today && span < MIN_SHIFT_MINUTES) return false;
+  }
+  if (today && out < TODAY_CHECKOUT_AFTER) return false;
+  return true;
+}
+
 function bestIn(row: DashboardRosterPerson): number | null {
   const times = [row.startTime, row.clockedIn].map(parseMinutes).filter((value): value is number => value != null);
   return times.length ? Math.min(...times) : null;
 }
 
-function bestOut(row: DashboardRosterPerson, today: boolean): number | null {
-  if (stillOnShift(row, today)) return null;
-  const out = parseMinutes(row.endTime) ?? parseMinutes(row.lastScreenshot);
-  if (out == null) return null;
-  const inn = bestIn(row);
-  if (inn != null) {
-    let span = out - inn;
-    if (span < 0) span += 1440;
-    if (row.source === "tivazo" && span < MIN_SHIFT_MINUTES) return null;
+function bestOut(row: DashboardRosterPerson): number | null {
+  return recordedOut(row);
+}
+
+/** Salary-safe Present: status Present only; Half day/Leave/Absent excluded; empty status falls back to in-punch. */
+function rowCountsPresent(row: DashboardRosterPerson): boolean {
+  const status = normalizeDayStatus(row.attendance);
+  if (status === "Present") return true;
+  if (status === "Half day" || status === "Leave" || status === "Absent") return false;
+  if (status && isRestStatus(row.attendance)) return false;
+  return bestIn(row) != null;
+}
+
+export function workdayPresentOn(
+  person: WorkdayPerson,
+  source: "all" | "bio" | "tivazo" = "all",
+): boolean {
+  if (source === "bio") return person.bioPresent;
+  if (source === "tivazo") return person.tivazoPresent;
+  return person.bioPresent || person.tivazoPresent;
+}
+
+export function uniqueWorkdayPeople(people: WorkdayPerson[]): WorkdayPerson[] {
+  const map = new Map<string, WorkdayPerson>();
+  const idToKey = new Map<string, string>();
+  for (const person of people) {
+    const email = person.email.trim().toLowerCase();
+    const id = person.id.trim().toLowerCase();
+    const name = person.name.trim().toLowerCase();
+    let key = email || id || name;
+    if (!key) continue;
+    // Collapse id-only rows into an earlier email-keyed row for the same id.
+    if (!email && id && idToKey.has(id)) key = idToKey.get(id)!;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, person);
+      if (id) idToKey.set(id, key);
+      continue;
+    }
+    // Prefer the row that already carries Present / richer punches.
+    const prevPresent = prev.bioPresent || prev.tivazoPresent;
+    const nextPresent = person.bioPresent || person.tivazoPresent;
+    if ((!prevPresent && nextPresent) || (!prev.email && person.email)) {
+      map.set(key, {
+        ...prev,
+        ...person,
+        email: person.email || prev.email,
+        id: prev.id || person.id,
+        bioPresent: prev.bioPresent || person.bioPresent,
+        tivazoPresent: prev.tivazoPresent || person.tivazoPresent,
+        sources: Array.from(new Set([...prev.sources, ...person.sources])),
+      });
+    }
+    if (id) idToKey.set(id, key);
   }
-  if (row.source === "tivazo" && today && out < TODAY_CHECKOUT_AFTER) return null;
-  return out;
+  return [...map.values()];
 }
 
 function pickName(current: string | undefined, next: string): string {
@@ -125,35 +354,107 @@ function pickName(current: string | undefined, next: string): string {
   return left.length >= right.length ? left : right;
 }
 
+function pickMinutes(
+  left: number | null | undefined,
+  right: number | null,
+  mode: "min" | "max",
+): number | null {
+  const values = [left, right].filter((value): value is number => value != null);
+  if (!values.length) return null;
+  return mode === "min" ? Math.min(...values) : Math.max(...values);
+}
+
+function arrivalOf(minutes: number | null): ArrivalStatus {
+  if (minutes == null) return "missing";
+  return minutes > LATE_AFTER_MIN ? "late" : "on-time";
+}
+
+function departureOf(minutes: number | null, pending: boolean): DepartureStatus {
+  if (pending) return "pending";
+  if (minutes == null) return "missing";
+  return minutes < WORKDAY_END_MIN ? "early" : "on-time";
+}
+
+function clockLabel(minutes: number | null): string {
+  return minutes == null ? "—" : formatMinutes(minutes);
+}
+
+type WorkdayDraft = {
+  id: string;
+  name: string;
+  email: string;
+  team: string;
+  designation: string;
+  date: string;
+  inMinutes: number | null;
+  outMinutes: number | null;
+  bioInMinutes: number | null;
+  bioOutMinutes: number | null;
+  tivazoInMinutes: number | null;
+  tivazoOutMinutes: number | null;
+  bioConfirmed: boolean;
+  tivazoConfirmed: boolean;
+  bioPresent: boolean;
+  tivazoPresent: boolean;
+  sources: Array<"bio" | "tivazo">;
+};
+
+export function workdayKey(person: { email: string; id: string; date?: string }): string {
+  return `${person.email.trim().toLowerCase() || person.id}|${person.date || ""}`;
+}
+
 export function mergeWorkdayPeople(
   bio: DashboardRosterPerson[],
   tivazo: DashboardRosterPerson[],
-  today: boolean,
+  today: boolean | string,
 ): WorkdayPerson[] {
-  const map = new Map<string, WorkdayPerson>();
+  const todayDate = typeof today === "string" ? today : "";
+  const forceToday = today === true;
+  const map = new Map<string, WorkdayDraft>();
+  const index = createIdentityIndex([...bio, ...tivazo]);
 
   const add = (row: DashboardRosterPerson) => {
-    const key = personKey(row);
-    if (!key) return;
+    const who = identityCanonical(index, row) || personKey(row);
+    if (!who) return;
+    // Weekly off / rest stay on the roster as Not present so Present + Not present == group Total.
+    const resting = isRestStatus(row.attendance);
+    const date = row.date?.trim();
+    const key = date ? `${who}|${date}` : who;
     const prev = map.get(key);
-    const inMinutes = bestIn(row);
-    const outMinutes = bestOut(row, today);
-    const next: WorkdayPerson = {
-      id: prev?.id || row.id || key,
+    const rowToday = forceToday || rowIsToday(row, todayDate, false);
+    const inMinutes = resting ? null : bestIn(row);
+    const outMinutes = resting ? null : bestOut(row);
+    const confirmed = resting ? false : confirmedCheckout(row, rowToday, inMinutes, outMinutes);
+    const next: WorkdayDraft = {
+      id: prev?.id || row.id || who,
       name: pickName(prev?.name, row.name),
       email: prev?.email || row.email,
       team: prev?.team && prev.team !== "Unassigned" ? prev.team : teamOf(row),
       designation: prev?.designation || row.designation || "",
-      inMinutes: [prev?.inMinutes, inMinutes].filter((value): value is number => value != null).reduce((a, b) => Math.min(a, b), Number.POSITIVE_INFINITY),
-      outMinutes: [prev?.outMinutes, outMinutes].filter((value): value is number => value != null).reduce((a, b) => Math.max(a, b), Number.NEGATIVE_INFINITY),
-      inLabel: "",
-      outLabel: "",
-      arrival: "missing",
-      departure: "missing",
+      date: prev?.date || row.date || "",
+      inMinutes: pickMinutes(prev?.inMinutes, inMinutes, "min"),
+      outMinutes: pickMinutes(prev?.outMinutes, outMinutes, "max"),
+      bioInMinutes: prev?.bioInMinutes ?? null,
+      bioOutMinutes: prev?.bioOutMinutes ?? null,
+      tivazoInMinutes: prev?.tivazoInMinutes ?? null,
+      tivazoOutMinutes: prev?.tivazoOutMinutes ?? null,
+      bioConfirmed: prev?.bioConfirmed ?? false,
+      tivazoConfirmed: prev?.tivazoConfirmed ?? false,
+      bioPresent: prev?.bioPresent ?? false,
+      tivazoPresent: prev?.tivazoPresent ?? false,
       sources: prev ? [...prev.sources] : [],
     };
-    if (next.inMinutes === Number.POSITIVE_INFINITY) next.inMinutes = null;
-    if (next.outMinutes === Number.NEGATIVE_INFINITY) next.outMinutes = null;
+    if (row.source === "bio") {
+      next.bioInMinutes = pickMinutes(prev?.bioInMinutes, inMinutes, "min");
+      next.bioOutMinutes = pickMinutes(prev?.bioOutMinutes, outMinutes, "max");
+      next.bioConfirmed = Boolean(prev?.bioConfirmed) || confirmed;
+      next.bioPresent = Boolean(prev?.bioPresent) || (!resting && rowCountsPresent(row));
+    } else {
+      next.tivazoInMinutes = pickMinutes(prev?.tivazoInMinutes, inMinutes, "min");
+      next.tivazoOutMinutes = pickMinutes(prev?.tivazoOutMinutes, outMinutes, "max");
+      next.tivazoConfirmed = Boolean(prev?.tivazoConfirmed) || confirmed;
+      next.tivazoPresent = Boolean(prev?.tivazoPresent) || (!resting && rowCountsPresent(row));
+    }
     if (!next.sources.includes(row.source)) next.sources.push(row.source);
     map.set(key, next);
   };
@@ -162,22 +463,35 @@ export function mergeWorkdayPeople(
 
   return [...map.values()]
     .map((person) => {
-      const arrival: ArrivalStatus =
-        person.inMinutes == null ? "missing" : person.inMinutes > LATE_AFTER_MIN ? "late" : "on-time";
-      const departure: DepartureStatus =
-        person.outMinutes == null
-          ? today
-            ? "pending"
-            : "missing"
-          : person.outMinutes < WORKDAY_END_MIN
-            ? "early"
-            : "on-time";
+      const todayRow = forceToday || Boolean(todayDate && person.date === todayDate);
+      const confirmed = person.bioConfirmed || person.tivazoConfirmed;
       return {
-        ...person,
-        inLabel: person.inMinutes == null ? "—" : formatMinutes(person.inMinutes),
-        outLabel: person.outMinutes == null ? "—" : formatMinutes(person.outMinutes),
-        arrival,
-        departure,
+        id: person.id,
+        name: person.name,
+        email: person.email,
+        team: person.team,
+        designation: person.designation,
+        date: person.date,
+        inMinutes: person.inMinutes,
+        outMinutes: person.outMinutes,
+        inLabel: clockLabel(person.inMinutes),
+        outLabel: clockLabel(person.outMinutes),
+        arrival: arrivalOf(person.inMinutes),
+        departure: departureOf(person.outMinutes, todayRow && !confirmed),
+        sources: person.sources,
+        bioPresent: person.bioPresent,
+        tivazoPresent: person.tivazoPresent,
+        bioInLabel: clockLabel(person.bioInMinutes),
+        bioOutLabel: clockLabel(person.bioOutMinutes),
+        tivazoInLabel: clockLabel(person.tivazoInMinutes),
+        tivazoOutLabel: clockLabel(person.tivazoOutMinutes),
+        bioArrival: arrivalOf(person.bioInMinutes),
+        bioDeparture: departureOf(person.bioOutMinutes, todayRow && person.sources.includes("bio") && !person.bioConfirmed),
+        tivazoArrival: arrivalOf(person.tivazoInMinutes),
+        tivazoDeparture: departureOf(
+          person.tivazoOutMinutes,
+          todayRow && person.sources.includes("tivazo") && !person.tivazoConfirmed,
+        ),
       };
     })
     .sort((left, right) => {
@@ -207,11 +521,39 @@ export function dailyLogToRoster(row: DailyLogRow, source: "bio" | "tivazo"): Da
     trackedLabel: row.trackedTime,
     designation: row.designation,
     joinDate: "",
+    date: row.date || row.rawDate || "",
   };
 }
 
-export function presentPeople(people: WorkdayPerson[]): WorkdayPerson[] {
-  return people.filter((person) => person.inMinutes != null || person.arrival !== "missing");
+function medianMinutes(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+export function averageWorkdayTimes(people: WorkdayPerson[]): { inTime: string; outTime: string } {
+  const ins = people
+    .map((person) => person.inMinutes)
+    .filter((value): value is number => value != null);
+  // Pending / unconfirmed outs (common on live Tivazo screenshots) must not skew "typical out".
+  const outs = people
+    .filter((person) => person.departure !== "pending" && person.outMinutes != null)
+    .map((person) => person.outMinutes as number);
+  const inMedian = medianMinutes(ins);
+  const outMedian = medianMinutes(outs);
+  return {
+    inTime: inMedian == null ? "—" : formatMinutes(inMedian),
+    outTime: outMedian == null ? "—" : formatMinutes(outMedian),
+  };
+}
+
+export function presentPeople(
+  people: WorkdayPerson[],
+  source: "all" | "bio" | "tivazo" = "all",
+): WorkdayPerson[] {
+  return people.filter((person) => workdayPresentOn(person, source));
 }
 
 export function workdaySlots(): number[] {
@@ -251,13 +593,58 @@ export function buildClockSlots(people: WorkdayPerson[], kind: "in" | "out"): Cl
   });
 }
 
-export function peopleForFocus(people: WorkdayPerson[], focus: ClockInsFocus): WorkdayPerson[] {
-  if (focus === "present") return people.filter((person) => person.inMinutes != null);
-  if (focus === "on-time") return people.filter((person) => person.arrival === "on-time");
-  if (focus === "late") return people.filter((person) => person.arrival === "late");
-  if (focus === "early") return people.filter((person) => person.departure === "early");
+export function clockLabelMinutes(label: string): number | null {
+  return parseMinutes(label);
+}
+
+export function sourcePunchMinutes(
+  person: WorkdayPerson,
+  source: "all" | "bio" | "tivazo",
+  kind: "in" | "out",
+): number | null {
+  if (source === "bio") return parseMinutes(kind === "in" ? person.bioInLabel : person.bioOutLabel);
+  if (source === "tivazo") return parseMinutes(kind === "in" ? person.tivazoInLabel : person.tivazoOutLabel);
+  return kind === "in" ? person.inMinutes : person.outMinutes;
+}
+
+export type PresenceHeatLevel = 0 | 1 | 2 | 3 | 4;
+
+export function presenceHeatLevel(
+  minutes: number | null,
+  kind: "in" | "out",
+  pending = false,
+): PresenceHeatLevel {
+  if (kind === "in") {
+    if (minutes == null) return 0;
+    if (minutes <= LATE_AFTER_MIN) return 4;
+    if (minutes <= 8 * 60) return 3;
+    if (minutes <= 9 * 60) return 2;
+    return 1;
+  }
+  if (pending) return 3;
+  if (minutes == null) return 0;
+  if (minutes >= WORKDAY_END_MIN) return 4;
+  if (minutes >= 14 * 60) return 3;
+  if (minutes >= 12 * 60) return 2;
+  return 1;
+}
+
+export function peopleForFocus(
+  people: WorkdayPerson[],
+  focus: ClockInsFocus,
+  source: "all" | "bio" | "tivazo" = "all",
+): WorkdayPerson[] {
+  const present = people.filter((person) => workdayPresentOn(person, source));
+  if (focus === "present") return present;
+  if (focus === "on-time") return present.filter((person) => person.arrival === "on-time");
+  if (focus === "late") return present.filter((person) => person.arrival === "late");
+  if (focus === "early") {
+    return present.filter((person) => person.departure === "early");
+  }
   if (focus === "full-day") {
-    return people.filter((person) => person.arrival !== "missing" && person.departure === "on-time");
+    return present.filter(
+      (person) => person.arrival === "on-time" && person.departure === "on-time",
+    );
   }
   return people.filter((person) => {
     const value = focus.kind === "in" ? person.inMinutes : person.outMinutes;

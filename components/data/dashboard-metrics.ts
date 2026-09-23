@@ -21,13 +21,6 @@ export const DASHBOARD_TREND_TABS: {
     description: "Share of active members who were present each day.",
     valueLabel: "Attendance %",
   },
-  {
-    metric: "utilization",
-    label: "Utilization",
-    title: "Work utilization",
-    description: "Average tracked work time as a percentage of an 8-hour day.",
-    valueLabel: "Utilization %",
-  },
 ];
 
 export function dashboardMetricInfo(metric: TrendMetric) {

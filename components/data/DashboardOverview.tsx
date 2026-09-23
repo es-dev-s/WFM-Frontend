@@ -3,50 +3,52 @@
 import { DashboardCoverageModal } from "@/components/data/DashboardCoverageModal";
 import {
   DashboardDateRangePicker,
-  defaultDashboardRange,
+  useDashboardDateRange,
 } from "@/components/data/DashboardDateRangePicker";
 import { DashboardHourlyPanel } from "@/components/data/DashboardHourlyPanel";
 import { DashboardLeaderboardPanel } from "@/components/data/DashboardLeaderboardPanel";
 import { DashboardMemberProfile } from "@/components/data/DashboardMemberProfile";
 import { DashboardSourceSnapshots } from "@/components/data/DashboardSourceSnapshots";
+import { DashboardMemberPeriodStats } from "@/components/data/DashboardMemberPeriodStats";
 import { DashboardStatCards } from "@/components/data/DashboardStatCards";
-import { DashboardTrendPanel } from "@/components/data/DashboardTrendPanel";
 import { QueryState } from "@/components/data/QueryState";
 import { FilterSelect } from "@/components/ui/FilterSelect";
-import { addDaysISO, formatDisplayDate, isoDateInZone } from "@/lib/datetime";
+import { formatDisplayDate, isoDateInZone } from "@/lib/datetime";
 import { scopeDashboard, selectVisibleRoster } from "@/lib/dashboard-scope";
 import {
   type DashboardOverview as DashboardOverviewData,
-  type TrendMetric,
-  type TrendPoint,
+  prefetchQueries,
   useQuery,
   withQuery,
 } from "@/lib/api";
+import { presetQueryUrls } from "@/lib/dashboard-prefetch";
 import { GitCompareArrows } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 const EMPTY_FILTERS: DashboardOverviewData["filters"]["members"] = [];
 
 export function DashboardOverview() {
-  const defaultRange = useMemo(() => defaultDashboardRange(), []);
-  const [startDate, setStartDate] = useState(defaultRange.start);
-  const [endDate, setEndDate] = useState(defaultRange.end);
-  const [trendMetric, setTrendMetric] = useState<TrendMetric>("present");
+  const { start: startDate, end: endDate, setRange } = useDashboardDateRange();
   const [teamId, setTeamId] = useState("");
   const [memberId, setMemberId] = useState("");
   const [coverageOpen, setCoverageOpen] = useState(false);
 
+  const today = isoDateInZone();
   const overview = useQuery<DashboardOverviewData>(
     withQuery("/dashboard/overview", { startDate, endDate }),
   );
-  const scopedTrend = useQuery<{ trend: TrendPoint[] }>(
-    teamId || memberId
-      ? withQuery("/dashboard/trend", {
-          teamId: teamId || undefined,
-          memberId: memberId || undefined,
-        })
-      : null,
+  const todayOverview = useQuery<DashboardOverviewData>(
+    startDate === today && endDate === today
+      ? null
+      : withQuery("/dashboard/overview", { startDate: today, endDate: today }),
   );
+
+  useEffect(() => {
+    if (!overview.data) return;
+    const id = window.setTimeout(() => prefetchQueries(presetQueryUrls(), 2), 200);
+    return () => window.clearTimeout(id);
+  }, [overview.data]);
+
   const view = useMemo(
     () => (overview.data ? scopeDashboard(overview.data, teamId, memberId) : null),
     [overview.data, teamId, memberId],
@@ -55,15 +57,21 @@ export function DashboardOverview() {
     () => (overview.data ? selectVisibleRoster(overview.data, teamId, memberId) : { bio: [], tivazo: [] }),
     [overview.data, teamId, memberId],
   );
+  const todayRoster = useMemo(
+    () =>
+      todayOverview.data
+        ? selectVisibleRoster(todayOverview.data, teamId, memberId)
+        : startDate === today && endDate === today
+          ? visibleRoster
+          : { bio: [], tivazo: [] },
+    [todayOverview.data, teamId, memberId, startDate, endDate, today, visibleRoster],
+  );
 
   const memberOptions = view?.filters.members ?? EMPTY_FILTERS;
   const memberIdsKey = memberOptions.map((member) => member.id).join("\n");
-
-  useEffect(() => {
-    if (!memberId || !memberIdsKey) return;
-    if (memberOptions.some((member) => member.id === memberId)) return;
+  if (memberId && memberIdsKey && !memberOptions.some((member) => member.id === memberId)) {
     setMemberId("");
-  }, [memberId, memberIdsKey, memberOptions]);
+  }
 
   const teamLabel = useMemo(() => {
     if (memberId) {
@@ -87,52 +95,10 @@ export function DashboardOverview() {
       ? `${coverageGaps} not on both`
       : "All on both";
 
-  const trendSource =
-    teamId || memberId
-      ? scopedTrend.refreshing || scopedTrend.loading
-        ? []
-        : scopedTrend.data?.trend ?? []
-      : view?.trend ?? [];
-  const trendPoints = useMemo(() => {
-    const points = trendSource;
-    const headcount = view?.summary.totalMembers || 1;
-    return points.map((point) => {
-      const clockIns = point.clockIns ?? point.value;
-      const tracked = point.trackedSeconds ?? 0;
-      if (trendMetric === "attendance") {
-        return {
-          day: point.day,
-          value: headcount ? Math.round((clockIns / headcount) * 1000) / 10 : 0,
-        };
-      }
-      if (trendMetric === "utilization") {
-        const capacity = 8 * 60 * 60;
-        return {
-          day: point.day,
-          value: capacity ? Math.round((tracked / headcount / capacity) * 1000) / 10 : 0,
-        };
-      }
-      return { day: point.day, value: clockIns };
-    });
-  }, [trendSource, view?.summary.totalMembers, trendMetric]);
-  const trendRangeLabel = useMemo(() => {
-    const today = isoDateInZone();
-    return `${formatDisplayDate(addDaysISO(today, -29))} – ${formatDisplayDate(today)}`;
-  }, []);
-
-  const scopeEmails = useMemo(() => {
-    const emails = new Set<string>();
-    for (const row of [...visibleRoster.bio, ...visibleRoster.tivazo]) {
-      const email = row.email.trim().toLowerCase();
-      if (email) emails.add(email);
-    }
-    return [...emails];
-  }, [visibleRoster]);
-
   return (
     <div
       className="smp-stage smp-stage--pad smp-dashboard"
-      aria-busy={overview.loading || overview.refreshing ? "true" : undefined}
+      aria-busy={overview.loading && !overview.data ? "true" : undefined}
     >
       {overview.error && !overview.data ? (
         <QueryState
@@ -142,18 +108,19 @@ export function DashboardOverview() {
           label="dashboard"
         />
       ) : (
-        <DashboardStatCards summary={view?.summary ?? null} />
+        <DashboardStatCards
+          summary={view?.summary ?? null}
+          scope={{
+            teamId,
+            memberId,
+            startDate,
+            endDate,
+          }}
+        />
       )}
 
       <div className="smp-dashboard-toolbar">
-        <DashboardDateRangePicker
-          start={startDate}
-          end={endDate}
-          onChange={(start, end) => {
-            setStartDate(start);
-            setEndDate(end);
-          }}
-        />
+        <DashboardDateRangePicker start={startDate} end={endDate} onChange={setRange} />
         <FilterSelect
           label="Group"
           value={teamId}
@@ -197,59 +164,71 @@ export function DashboardOverview() {
         open={coverageOpen}
         coverage={coverage}
         loading={!coverage && overview.loading}
+        startDate={startDate}
+        endDate={endDate}
         onClose={() => setCoverageOpen(false)}
       />
 
       {view?.member ? <DashboardMemberProfile member={view.member} /> : null}
 
-      <DashboardSourceSnapshots
-        biomatic={view?.biomatic ?? null}
-        tivazo={view?.tivazo ?? null}
-        biomaticLoading={overview.loading && !overview.data}
-        tivazoLoading={overview.loading && !overview.data}
-        dateRangeLabel={dateRangeLabel}
-        startDate={startDate}
-        endDate={endDate}
-        teamId={teamId}
-        memberId={memberId}
-        emails={scopeEmails}
-        bioMemberId={visibleRoster.bio[0]?.id || ""}
-        tivazoMemberId={visibleRoster.tivazo[0]?.id || ""}
-      />
-
-      <div className="smp-split smp-dashboard-split">
-        <DashboardTrendPanel
-          metric={trendMetric}
-          onMetricChange={setTrendMetric}
-          points={view ? trendPoints : null}
-          loading={overview.loading && !overview.data}
-          teamLabel={teamLabel}
-          dateRangeLabel={trendRangeLabel}
+      {memberId ? (
+        <DashboardMemberPeriodStats
+          memberId={memberId}
+          memberLabel={teamLabel}
+          startDate={startDate}
+          endDate={endDate}
         />
-        <DashboardLeaderboardPanel
-          board={view?.leaderboards?.[trendMetric] ?? view?.leaderboard ?? null}
-          loading={overview.loading && !overview.data}
-          metric={trendMetric}
-          teamLabel={teamLabel}
+      ) : null}
+
+      {/* Single-member view: Bio/Tivazo Present/Leave/Total cards are always 0/1 — hide them. */}
+      {!memberId ? (
+        <DashboardSourceSnapshots
+          biomatic={view?.biomatic ?? null}
+          tivazo={view?.tivazo ?? null}
+          biomaticLoading={overview.loading && !overview.data}
+          tivazoLoading={overview.loading && !overview.data}
           dateRangeLabel={dateRangeLabel}
+          startDate={startDate}
+          endDate={endDate}
+          teamId={teamId}
+          memberId={memberId}
+          bioPeople={visibleRoster.bio}
+          tivazoPeople={visibleRoster.tivazo}
+          bioTeams={overview.data?.filters.teams ?? []}
+          tivazoGroups={overview.data?.filters.supervisors ?? []}
         />
-      </div>
+      ) : null}
 
-      <DashboardHourlyPanel
-        compare={view?.hourly?.compare ?? null}
-        bio={visibleRoster.bio}
-        tivazo={visibleRoster.tivazo}
-        loading={overview.loading && !overview.data}
-        error={overview.data ? null : overview.error}
-        onRetry={overview.reload}
-        teamLabel={teamLabel}
-        teamId={teamId}
-        memberId={memberId}
-        teams={overview.data?.filters.teams ?? []}
-        supervisors={overview.data?.filters.supervisors ?? []}
-        startDate={startDate}
-        endDate={endDate}
-      />
+      {/* Daily clock-ins first; Member ranking below (hidden for single-member focus). */}
+      <div className="smp-dashboard-stack">
+        <DashboardHourlyPanel
+          bio={visibleRoster.bio}
+          tivazo={visibleRoster.tivazo}
+          liveBio={todayRoster.bio}
+          liveTivazo={todayRoster.tivazo}
+          loading={overview.loading && !overview.data}
+          error={overview.data ? null : overview.error}
+          onRetry={overview.reload}
+          teamLabel={teamLabel}
+          teamId={teamId}
+          memberId={memberId}
+          teams={overview.data?.filters.teams ?? []}
+          supervisors={overview.data?.filters.supervisors ?? []}
+          startDate={startDate}
+          endDate={endDate}
+        />
+        {!memberId ? (
+          <DashboardLeaderboardPanel
+            board={view?.leaderboards?.present ?? view?.leaderboard ?? null}
+            loading={overview.loading && !overview.data}
+            metric="present"
+            teamLabel={teamLabel}
+            dateRangeLabel={dateRangeLabel}
+            startDate={startDate}
+            endDate={endDate}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }

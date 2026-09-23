@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AuthRole } from "@/lib/auth-role";
+import { getCached, peekFresh, queryTtl, setCached } from "@/lib/query-cache";
 
 export type { AuthRole } from "@/lib/auth-role";
 export { authRoleLabel, isOrgWideAuthRole, isScopedAuthRole } from "@/lib/auth-role";
@@ -205,10 +206,25 @@ export type DashboardSummary = {
   tivazoTeams: number;
   biomaticMembers: number;
   tivazoMembers: number;
-  avgWorkHours: string;
-  avgClockIn: string;
+  /** Combined: unique Present across Bio ∪ Tivazo. */
   avgAttendance: string;
+  /** Combined in→out work span average (earliest in / latest out per person). */
+  avgWorkHours: string;
+  /** Combined earliest first-punch average (one per person). */
+  avgClockIn: string;
   biomaticPresent: number;
+  bioPresent: number;
+  bioTotal: number;
+  tivazoPresent: number;
+  tivazoTotal: number;
+  bioAttendance: string;
+  tivazoAttendance: string;
+  /** Biometrics in→out span average for Present people. */
+  bioAvgWorkHours: string;
+  /** Tivazo tracked-time average per present person-day. */
+  tivazoAvgWorkHours: string;
+  bioClockIn: string;
+  tivazoClockIn: string;
 };
 
 export type DashboardMemberFocus = {
@@ -269,8 +285,11 @@ export type DashboardRosterPerson = {
   lastScreenshot: string;
   trackedSeconds: number;
   trackedLabel: string;
+  /** Present person-days when roster row is range-aggregated (Tivazo). */
+  presentDays?: number;
   designation: string;
   joinDate: string;
+  date?: string;
 };
 
 export type DashboardOverview = {
@@ -572,69 +591,140 @@ type QueryState<T> = {
   refreshing: boolean;
 };
 
+const inflightQueries = new Map<string, Promise<unknown>>();
+
+function snapshotState<T>(url: string | null, force = false): QueryState<T> & { url: string | null } {
+  if (!url) {
+    return { url, data: null, error: null, loading: false, refreshing: false };
+  }
+  const hit = getCached<T>(url);
+  const fresh = Boolean(hit && Date.now() - hit.at < queryTtl(url).fresh);
+  return {
+    url,
+    data: hit?.data ?? null,
+    error: null,
+    loading: !hit,
+    refreshing: Boolean(hit) && (!fresh || force),
+  };
+}
+
+export function loadQuery<T>(url: string, force = false): Promise<T> {
+  if (!force) {
+    const fresh = peekFresh<T>(url);
+    if (fresh !== null) return Promise.resolve(fresh);
+    const pending = inflightQueries.get(url);
+    if (pending) return pending as Promise<T>;
+  }
+  const request = apiGet<T>(url)
+    .then((data) => {
+      setCached(url, data);
+      return data;
+    })
+    .finally(() => {
+      if (inflightQueries.get(url) === request) inflightQueries.delete(url);
+    });
+  inflightQueries.set(url, request);
+  return request;
+}
+
+export function prefetchQueries(urls: Array<string | null | undefined>, concurrency = 2): void {
+  const unique = [...new Set(urls.filter((url): url is string => Boolean(url)))].filter(
+    (url) => !peekFresh(url),
+  );
+  if (!unique.length) return;
+  let index = 0;
+  const workers = Array.from({ length: Math.min(concurrency, unique.length) }, async () => {
+    while (index < unique.length) {
+      const url = unique[index];
+      index += 1;
+      try {
+        await loadQuery(url);
+      } catch {
+        /* prefetch is best-effort */
+      }
+    }
+  });
+  void Promise.all(workers);
+}
+
 export function useQuery<T>(url: string | null): QueryState<T> & {
   reload: () => void;
 } {
   const [epoch, setEpoch] = useState(0);
-  const [state, setState] = useState<QueryState<T>>({
-    data: null,
-    error: null,
-    loading: Boolean(url),
-    refreshing: false,
-  });
+  const [seenEpoch, setSeenEpoch] = useState(0);
+  const [state, setState] = useState(() => snapshotState<T>(url));
   const urlRef = useRef(url);
+  const fetchedRef = useRef({ url, epoch: -1 });
   const generationRef = useRef(0);
+
+  if (state.url !== url) {
+    const next = snapshotState<T>(url);
+    if (next.data || !state.data) {
+      setState(next);
+    } else {
+      setState({
+        ...next,
+        data: state.data,
+        loading: false,
+        refreshing: true,
+      });
+    }
+  } else if (epoch !== seenEpoch) {
+    setSeenEpoch(epoch);
+    if (url) setState(snapshotState<T>(url, true));
+  }
 
   const reload = useCallback(() => setEpoch((value) => value + 1), []);
 
   useEffect(() => {
+    urlRef.current = url;
     if (!url) {
       generationRef.current += 1;
-      urlRef.current = url;
-      setState({ data: null, error: null, loading: false, refreshing: false });
+      fetchedRef.current = { url, epoch };
+      return;
+    }
+
+    const force = fetchedRef.current.url === url && fetchedRef.current.epoch !== epoch;
+    if (peekFresh<T>(url) && !force) {
+      fetchedRef.current = { url, epoch };
       return;
     }
 
     const generation = generationRef.current + 1;
     generationRef.current = generation;
-    urlRef.current = url;
-    const controller = new AbortController();
-    setState((prev) => ({
-      data: prev.data,
-      error: null,
-      loading: prev.data === null,
-      refreshing: prev.data !== null,
-    }));
-
-    apiGet<T>(url, { signal: controller.signal })
+    loadQuery<T>(url, force)
       .then((data) => {
-        if (generation !== generationRef.current || controller.signal.aborted) return;
-        setState({ data, error: null, loading: false, refreshing: false });
+        if (generation !== generationRef.current || urlRef.current !== url) return;
+        fetchedRef.current = { url, epoch };
+        setState({ url, data, error: null, loading: false, refreshing: false });
       })
       .catch((error: unknown) => {
-        if (
-          generation !== generationRef.current ||
-          controller.signal.aborted ||
-          isAbortError(error)
-        ) {
+        if (generation !== generationRef.current || urlRef.current !== url || isAbortError(error)) {
           return;
         }
-        const next =
+        const nextError =
           error instanceof ApiError
             ? error
             : new ApiError(0, "unknown", "Something went wrong.");
         setState((prev) => ({
-          data: prev.data,
-          error: next,
+          url,
+          data: prev.url === url ? prev.data : getCached<T>(url)?.data ?? null,
+          error: nextError,
           loading: false,
           refreshing: false,
         }));
       });
-
-    return () => controller.abort();
   }, [url, epoch]);
 
-  return { ...state, reload };
+  const cached = url ? getCached<T>(url) : null;
+  const data = state.url === url ? state.data : cached?.data ?? state.data;
+  return {
+    data,
+    error: state.url === url ? state.error : null,
+    loading: (state.url === url ? state.loading : !cached && !state.data) && !data,
+    refreshing: state.url === url ? state.refreshing : Boolean(data),
+    reload,
+  };
 }
 
 function mergeUnique<T>(
@@ -694,6 +784,34 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
   const moreAbortRef = useRef<AbortController | null>(null);
 
   const reload = useCallback(() => setEpoch((value) => value + 1), []);
+  const [trackedKey, setTrackedKey] = useState(filterKey);
+
+  if (trackedKey !== filterKey) {
+    setTrackedKey(filterKey);
+    if (!filterKey) {
+      setState({
+        items: [],
+        total: 0,
+        hasMore: false,
+        loading: false,
+        refreshing: false,
+        loadingMore: false,
+        error: null,
+        data: null,
+      });
+    } else {
+      setState((prev) => ({
+        items: prev.items,
+        total: prev.total,
+        hasMore: prev.hasMore,
+        loading: prev.items.length === 0,
+        refreshing: prev.items.length > 0,
+        loadingMore: false,
+        error: null,
+        data: prev.data,
+      }));
+    }
+  }
 
   useEffect(() => {
     buildUrlRef.current = buildUrl;
@@ -710,16 +828,6 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
       cursorRef.current = 0;
       hasMoreRef.current = false;
       filterRef.current = filterKey;
-      setState({
-        items: [],
-        total: 0,
-        hasMore: false,
-        loading: false,
-        refreshing: false,
-        loadingMore: false,
-        error: null,
-        data: null,
-      });
       return;
     }
 
@@ -730,17 +838,6 @@ export function useInfinitePage<T, P extends ListPage<T> = ListPage<T>>(
     inflightRef.current = true;
     cursorRef.current = 0;
     hasMoreRef.current = false;
-
-    setState((prev) => ({
-      items: prev.items,
-      total: prev.total,
-      hasMore: prev.hasMore,
-      loading: prev.items.length === 0,
-      refreshing: prev.items.length > 0,
-      loadingMore: false,
-      error: null,
-      data: prev.data,
-    }));
 
     apiGet<P>(buildUrlRef.current(0), { signal: controller.signal })
       .then((page) => {

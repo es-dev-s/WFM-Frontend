@@ -1,12 +1,13 @@
 "use client";
 
 import { useMenu } from "@/hooks/use-menu";
+import { datePresets, matchDatePreset } from "@/lib/date-presets";
 import {
-  addDaysISO,
   formatRangeLabel,
   isoDateInZone,
   monthCells,
   monthTitle,
+  normalizeDateRange,
   shiftMonth,
 } from "@/lib/datetime";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
@@ -21,6 +22,7 @@ type DateRangePickerProps = {
   onChange: (start: string, end: string) => void;
   variant?: "default" | "dashboard";
   showPresets?: boolean;
+  applyOnFirstDay?: boolean;
 };
 
 export function DateRangePicker({
@@ -30,9 +32,11 @@ export function DateRangePicker({
   onChange,
   variant = "default",
   showPresets = true,
+  applyOnFirstDay,
 }: DateRangePickerProps) {
   const today = useMemo(() => isoDateInZone(), []);
-  const latest = max ?? today;
+  const latest = max && max <= today ? max : today;
+  const commitFirstDay = applyOnFirstDay ?? !showPresets;
   const [open, setOpen] = useState(false);
   const [cursor, setCursor] = useState(() => {
     const [year, month] = (end || latest).split("-").map(Number);
@@ -52,6 +56,8 @@ export function DateRangePicker({
     () => monthCells(cursor.year, cursor.month),
     [cursor.year, cursor.month],
   );
+  const presets = useMemo(() => datePresets(today), [today]);
+  const activePreset = matchDatePreset(start, end, today);
 
   const previewStart =
     pickingEnd && hover && hover < draftStart ? hover : draftStart;
@@ -71,22 +77,6 @@ export function DateRangePicker({
     `${nextCursor.year}-${String(nextCursor.month).padStart(2, "0")}` <=
     latest.slice(0, 7);
 
-  const presets = [
-    { id: "today", label: "Today", start: latest, end: latest },
-    {
-      id: "7d",
-      label: "7 days",
-      start: addDaysISO(latest, -6),
-      end: latest,
-    },
-    {
-      id: "14d",
-      label: "14 days",
-      start: addDaysISO(latest, -13),
-      end: latest,
-    },
-  ];
-
   const openPicker = () => {
     const [year, month] = (end || latest).split("-").map(Number);
     setCursor({ year, month });
@@ -98,13 +88,13 @@ export function DateRangePicker({
   };
 
   const apply = (nextStart: string, nextEnd: string) => {
-    const from = nextStart <= nextEnd ? nextStart : nextEnd;
-    const to = nextStart <= nextEnd ? nextEnd : nextStart;
-    setDraftStart(from);
-    setDraftEnd(to);
-    onChange(from, to);
+    const next = normalizeDateRange(nextStart, nextEnd, latest);
+    setDraftStart(next.start);
+    setDraftEnd(next.end);
     setPickingEnd(false);
     setOpen(false);
+    if (next.start === start && next.end === end) return;
+    onChange(next.start, next.end);
   };
 
   const onDayClick = (iso: string) => {
@@ -113,15 +103,11 @@ export function DateRangePicker({
       setDraftStart(iso);
       setDraftEnd(iso);
       setPickingEnd(true);
-      onChange(iso, iso);
+      if (commitFirstDay) apply(iso, iso);
       return;
     }
     apply(draftStart, iso);
   };
-
-  const activePreset = presets.find(
-    (item) => item.start === start && item.end === end,
-  )?.id;
 
   const isDashboard = variant === "dashboard";
 
@@ -222,6 +208,7 @@ export function DateRangePicker({
                   type="button"
                   className="smp-chip"
                   data-active={activePreset === item.id ? "true" : "false"}
+                  aria-pressed={activePreset === item.id}
                   onClick={() => apply(item.start, item.end)}
                 >
                   {item.label}

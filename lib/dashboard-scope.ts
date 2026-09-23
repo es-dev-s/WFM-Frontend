@@ -15,13 +15,29 @@ import type {
   TrendMetric,
 } from "@/lib/api";
 import {
-  averageHours,
+  averageWorkedHours,
   formatHours,
+  isPresentAttendance,
+  isRestStatus,
   normalizeDayStatus,
   percent,
   titleStatus,
   utilization,
 } from "@/lib/server/metrics";
+import {
+  createIdentityIndex,
+  identityCanonical,
+  identityMatchesNeedle,
+  type IdentityLike,
+} from "@/lib/identity";
+import {
+  formatMinutes,
+  mergeWorkdayPeople,
+  parseClockMinutes,
+  rosterPunchMinutes,
+  signedPunchDelta,
+  type WorkdayPerson,
+} from "@/lib/workday-clock";
 
 function keyOf(person: DashboardRosterPerson): string {
   return person.email.trim().toLowerCase() || person.id;
@@ -43,13 +59,18 @@ function inTeam(person: DashboardRosterPerson, teamId: string, teams: FilterOpti
   return person.teams.some((value) => aliases.has(value.trim().toLowerCase()));
 }
 
-function inMember(person: DashboardRosterPerson, memberId: string): boolean {
+function asIdentity(person: DashboardRosterPerson): IdentityLike {
+  return {
+    email: person.email,
+    id: person.id,
+    name: person.name,
+    source: person.source,
+  };
+}
+
+function inMember(person: DashboardRosterPerson, memberId: string, index?: ReturnType<typeof createIdentityIndex>): boolean {
   if (!memberId) return true;
-  return (
-    sameKey(person.id, memberId) ||
-    sameKey(person.email, memberId) ||
-    sameKey(person.name, memberId)
-  );
+  return identityMatchesNeedle(asIdentity(person), memberId, index);
 }
 
 function isLate(start: string): boolean {
@@ -87,10 +108,14 @@ function recountTivazo(people: DashboardRosterPerson[]): TivazoSummary {
   let idle = 0;
   let offline = 0;
   let tracked = 0;
+  let presentDays = 0;
   for (const row of people) {
-    if (row.attendance.toLowerCase() === "present") {
+    if (isPresentAttendance(row.attendance)) {
       present += 1;
-      tracked += row.trackedSeconds;
+      tracked += Math.max(0, row.trackedSeconds || 0);
+      const days = row.presentDays ?? 0;
+      if (days > 0) presentDays += days;
+      else if (row.trackedSeconds > 0) presentDays += 1;
     } else {
       absent += 1;
     }
@@ -116,8 +141,85 @@ function recountTivazo(people: DashboardRosterPerson[]): TivazoSummary {
     offlineMembers: offline,
     presentMembers: present,
     absentMembers: absent,
-    avgWorkHours: averageHours(tracked, present),
+    avgWorkHours: averageWorkedHours(tracked, presentDays || (tracked > 0 ? present : 0)),
   };
+}
+
+
+function bioDoorSpanSeconds(row: DashboardRosterPerson): number {
+  const inM = parseClockMinutes(row.startTime || row.clockedIn);
+  const outM = parseClockMinutes(row.endTime || row.lastScreenshot);
+  if (inM == null || outM == null) return 0;
+  let delta = signedPunchDelta(inM, outM);
+  if (delta <= 0) delta += 1440;
+  if (delta <= 0 || delta > 16 * 60) return 0;
+  return delta * 60;
+}
+
+function averageBioDoorFromRoster(people: DashboardRosterPerson[]): string {
+  let total = 0;
+  let count = 0;
+  for (const row of people) {
+    if (!isPresentAttendance(row.attendance)) continue;
+    const seconds = bioDoorSpanSeconds(row);
+    if (seconds <= 0) continue;
+    total += seconds;
+    count += 1;
+  }
+  return averageWorkedHours(total, count);
+}
+
+function workSpanSeconds(inMinutes: number | null, outMinutes: number | null): number {
+  if (inMinutes == null || outMinutes == null) return 0;
+  let delta = outMinutes - inMinutes;
+  if (delta <= 0) delta += 1440;
+  if (delta <= 0 || delta > 16 * 60) return 0;
+  return delta * 60;
+}
+
+/** Combined Avg Work Hour: earliest in / latest out across Bio ∪ Tivazo, one span per person. */
+function combinedWorkHoursFromRoster(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]): string {
+  const people = new Map<string, { ins: number[]; outs: number[]; present: boolean }>();
+  const touch = (row: DashboardRosterPerson) => {
+    const key = keyOf(row);
+    if (!key) return;
+    const prev = people.get(key) ?? { ins: [], outs: [], present: false };
+    if (isPresentAttendance(row.attendance)) prev.present = true;
+    const inPunch = punchOf(row, "in");
+    const outPunch = punchOf(row, "out");
+    if (inPunch) prev.ins.push(inPunch.hour * 60 + inPunch.minute);
+    if (outPunch) prev.outs.push(outPunch.hour * 60 + outPunch.minute);
+    people.set(key, prev);
+  };
+  for (const row of bio) touch(row);
+  for (const row of tivazo) touch(row);
+
+  let total = 0;
+  let count = 0;
+  for (const row of people.values()) {
+    if (!row.present || !row.ins.length || !row.outs.length) continue;
+    const seconds = workSpanSeconds(Math.min(...row.ins), Math.max(...row.outs));
+    if (seconds <= 0) continue;
+    total += seconds;
+    count += 1;
+  }
+  return averageWorkedHours(total, count);
+}
+
+function combinedAvgClockInFromRoster(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]): string {
+  const earliest = new Map<string, number>();
+  for (const row of [...bio, ...tivazo]) {
+    const key = keyOf(row);
+    if (!key) continue;
+    const punch = punchOf(row, "in");
+    if (!punch) continue;
+    const minutes = punch.hour * 60 + punch.minute;
+    const prev = earliest.get(key);
+    if (prev == null || minutes < prev) earliest.set(key, minutes);
+  }
+  if (!earliest.size) return "—";
+  const avg = [...earliest.values()].reduce((sum, value) => sum + value, 0) / earliest.size;
+  return formatClockLabel(avg);
 }
 
 function uniqueAttendance(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]) {
@@ -125,7 +227,7 @@ function uniqueAttendance(bio: DashboardRosterPerson[], tivazo: DashboardRosterP
   for (const row of [...bio, ...tivazo]) {
     const key = keyOf(row);
     if (!key) continue;
-    people.set(key, people.get(key) === true || row.attendance.toLowerCase() === "present");
+    people.set(key, people.get(key) === true || isPresentAttendance(row.attendance));
   }
   let present = 0;
   for (const value of people.values()) if (value) present += 1;
@@ -146,11 +248,6 @@ function punchOf(person: DashboardRosterPerson, which: "in" | "out"): { hour: nu
     return parseClock(person.startTime) || parseClock(person.clockedIn);
   }
   return parseClock(person.endTime) || parseClock(person.lastScreenshot);
-}
-
-function punchMinutes(punch: { hour: number; minute: number } | null): number | null {
-  if (!punch) return null;
-  return punch.hour * 60 + punch.minute;
 }
 
 function formatClockLabel(totalMinutes: number): string {
@@ -196,80 +293,234 @@ function buildHourly(people: DashboardRosterPerson[], which: "in" | "out"): Hour
   };
 }
 
+function punchKey(person: DashboardRosterPerson, index?: ReturnType<typeof createIdentityIndex>): string {
+  const who = (index ? identityCanonical(index, asIdentity(person)) : "") || keyOf(person);
+  const date = person.date?.trim();
+  return date ? `${who}|${date}` : who;
+}
+
+function medianOf(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function formatDurationMinutes(totalMinutes: number): string {
+  const abs = Math.abs(Math.round(totalMinutes));
+  if (abs === 0) return "0 min";
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  if (hours === 0) return `${minutes} min`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
+}
+
 function punchMoment(values: number[]) {
-  if (!values.length) return { time: "—", people: 0 };
-  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
-  return { time: formatClockLabel(avg), people: values.length };
+  const median = medianOf(values);
+  if (median == null) return { time: "—", people: 0 };
+  return { time: formatMinutes(median), people: values.length };
 }
 
 function punchGap(values: number[], after: string, before: string) {
-  if (!values.length) return { label: "—", minutes: null, people: 0, note: "No paired punches" };
-  const avg = Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+  const median = medianOf(values);
+  if (median == null) return { label: "—", minutes: null, people: 0, note: "No paired punches" };
+  const avg = Math.round(median);
+  if (avg === 0) {
+    return { label: "0 min", minutes: 0, people: values.length, note: "Same time" };
+  }
+  const abs = Math.abs(avg);
   return {
-    label: avg >= 0 ? after : before,
-    minutes: Math.abs(avg),
+    label: formatDurationMinutes(abs),
+    minutes: abs,
     people: values.length,
-    note: `${values.length} paired`,
+    note: avg > 0 ? after : before,
   };
 }
 
-function buildPunch(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]): PunchCompare {
-  const bioMap = new Map(bio.map((row) => [keyOf(row), row]));
-  const tivMap = new Map(tivazo.map((row) => [keyOf(row), row]));
-  const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
+
+export type PunchCompareSlot =
+  | "checkIn-bio"
+  | "checkIn-tivazo"
+  | "checkIn-gap"
+  | "checkIn-overall"
+  | "checkOut-tivazo"
+  | "checkOut-bio"
+  | "checkOut-gap"
+  | "checkOut-overall";
+
+export type PunchCompareFocus = Record<PunchCompareSlot, DashboardRosterPerson[]>;
+
+function workdayAsRoster(person: WorkdayPerson, source: "bio" | "tivazo"): DashboardRosterPerson {
+  const present = source === "bio" ? person.bioPresent : person.tivazoPresent;
+  const inLabel = source === "bio" ? person.bioInLabel : person.tivazoInLabel;
+  const outLabel = source === "bio" ? person.bioOutLabel : person.tivazoOutLabel;
+  return {
+    source,
+    id: person.id,
+    email: person.email,
+    name: person.name,
+    teams: person.team ? [person.team] : [],
+    department: person.team,
+    groups: [],
+    attendance: present ? "Present" : "",
+    status: "",
+    startTime: inLabel === "—" ? "" : inLabel,
+    endTime: outLabel === "—" ? "" : outLabel,
+    clockedIn: source === "tivazo" && inLabel !== "—" ? inLabel : "",
+    lastScreenshot: source === "tivazo" && outLabel !== "—" ? outLabel : "",
+    trackedSeconds: 0,
+    trackedLabel: "",
+    designation: person.designation,
+    joinDate: "",
+    date: person.date,
+  };
+}
+
+export function emptyPunchCompareFocus(): PunchCompareFocus {
+  return {
+    "checkIn-bio": [],
+    "checkIn-tivazo": [],
+    "checkIn-gap": [],
+    "checkIn-overall": [],
+    "checkOut-tivazo": [],
+    "checkOut-bio": [],
+    "checkOut-gap": [],
+    "checkOut-overall": [],
+  };
+}
+
+function collapsePunches(
+  rows: DashboardRosterPerson[],
+): Map<string, { in: number | null; out: number | null }> {
+  const index = createIdentityIndex(rows.map(asIdentity));
+  const map = new Map<string, { in: number | null; out: number | null }>();
+  for (const row of rows) {
+    if (isRestStatus(row.attendance)) continue;
+    const key = punchKey(row, index);
+    if (!key) continue;
+    const inn = rosterPunchMinutes(row, "in");
+    const out = rosterPunchMinutes(row, "out");
+    const prev = map.get(key) ?? { in: null, out: null };
+    const ins = [prev.in, inn].filter((value): value is number => value != null);
+    const outs = [prev.out, out].filter((value): value is number => value != null);
+    map.set(key, {
+      in: ins.length ? Math.min(...ins) : null,
+      out: outs.length ? Math.max(...outs) : null,
+    });
+  }
+  return map;
+}
+
+export function buildPunchCompareBundle(
+  bio: DashboardRosterPerson[],
+  tivazo: DashboardRosterPerson[],
+  options?: { todayDate?: string; undatedIsToday?: boolean; period?: "day" | "range" },
+): { compare: PunchCompare; focus: PunchCompareFocus } {
+  const period = options?.period ?? "day";
+  const todayArg = options?.todayDate?.trim() || options?.undatedIsToday === true;
+  // Single source of truth with chip cards: confirmed outs, rest days excluded, identity merge.
+  const people = mergeWorkdayPeople(bio, tivazo, todayArg || false);
+
   const bioIn: number[] = [];
   const tivIn: number[] = [];
   const inGaps: number[] = [];
-  const inCombined: number[] = [];
+  const inOverall: number[] = [];
   const bioOut: number[] = [];
   const tivOut: number[] = [];
   const outGaps: number[] = [];
-  const outCombined: number[] = [];
+  const outOverall: number[] = [];
+  const focus = emptyPunchCompareFocus();
 
-  for (const key of keys) {
-    const bioRow = bioMap.get(key);
-    const tivRow = tivMap.get(key);
-    const inBio = punchMinutes(bioRow ? punchOf(bioRow, "in") : null);
-    const inTiv = punchMinutes(tivRow ? punchOf(tivRow, "in") : null);
-    const outBio = punchMinutes(bioRow ? punchOf(bioRow, "out") : null);
-    const outTiv = punchMinutes(tivRow ? punchOf(tivRow, "out") : null);
+  for (const person of people) {
+    const inBio = parseClockMinutes(person.bioInLabel);
+    const inTiv = parseClockMinutes(person.tivazoInLabel);
+    const outBio =
+      person.bioDeparture === "pending" || person.bioDeparture === "missing"
+        ? null
+        : parseClockMinutes(person.bioOutLabel);
+    const outTiv =
+      person.tivazoDeparture === "pending" || person.tivazoDeparture === "missing"
+        ? null
+        : parseClockMinutes(person.tivazoOutLabel);
+
     if (inBio != null) {
       bioIn.push(inBio);
-      inCombined.push(inBio);
+      focus["checkIn-bio"].push(workdayAsRoster(person, "bio"));
     }
     if (inTiv != null) {
       tivIn.push(inTiv);
-      inCombined.push(inTiv);
+      focus["checkIn-tivazo"].push(workdayAsRoster(person, "tivazo"));
     }
-    if (inBio != null && inTiv != null) inGaps.push(inTiv - inBio);
-    if (outTiv != null) {
-      tivOut.push(outTiv);
-      outCombined.push(outTiv);
+    // One overall in per person (earliest reliable punch), never double-count Bio+Tivazo.
+    if (person.inMinutes != null) {
+      inOverall.push(person.inMinutes);
+      const preferred: "bio" | "tivazo" =
+        inBio != null && (inTiv == null || inBio <= inTiv) ? "bio" : "tivazo";
+      focus["checkIn-overall"].push(workdayAsRoster(person, preferred));
     }
+    if (inBio != null && inTiv != null) {
+      inGaps.push(signedPunchDelta(inBio, inTiv));
+      focus["checkIn-gap"].push(workdayAsRoster(person, "bio"));
+      focus["checkIn-gap"].push(workdayAsRoster(person, "tivazo"));
+    }
+
     if (outBio != null) {
       bioOut.push(outBio);
-      outCombined.push(outBio);
+      focus["checkOut-bio"].push(workdayAsRoster(person, "bio"));
     }
-    if (outBio != null && outTiv != null) outGaps.push(outBio - outTiv);
+    if (outTiv != null) {
+      tivOut.push(outTiv);
+      focus["checkOut-tivazo"].push(workdayAsRoster(person, "tivazo"));
+    }
+    if (person.departure !== "pending" && person.outMinutes != null) {
+      outOverall.push(person.outMinutes);
+      const preferred: "bio" | "tivazo" =
+        outBio != null && (outTiv == null || outBio >= outTiv) ? "bio" : "tivazo";
+      focus["checkOut-overall"].push(workdayAsRoster(person, preferred));
+    }
+    if (outBio != null && outTiv != null) {
+      outGaps.push(signedPunchDelta(outTiv, outBio));
+      focus["checkOut-gap"].push(workdayAsRoster(person, "tivazo"));
+      focus["checkOut-gap"].push(workdayAsRoster(person, "bio"));
+    }
   }
 
+  const outNote = period === "range" ? "No confirmed check-outs in this range" : "No confirmed check-outs for this day";
+  const inNote = period === "range" ? "No check-ins in this range" : "No check-ins for this day";
+
   return {
-    checkIn: {
-      first: punchMoment(bioIn),
-      second: punchMoment(tivIn),
-      gap: punchGap(inGaps, "Tivazo after Biometrics", "Tivazo before Biometrics"),
-      overall: punchMoment(inCombined),
+    compare: {
+      checkIn: {
+        first: punchMoment(bioIn),
+        second: punchMoment(tivIn),
+        gap:
+          inGaps.length === 0 && bioIn.length + tivIn.length === 0
+            ? { label: "—", minutes: null, people: 0, note: inNote }
+            : punchGap(inGaps, "Tivazo after Biometrics", "Tivazo before Biometrics"),
+        overall: punchMoment(inOverall),
+      },
+      checkOut: {
+        first: punchMoment(tivOut),
+        second: punchMoment(bioOut),
+        gap:
+          outOverall.length === 0
+            ? { label: "—", minutes: null, people: 0, note: outNote }
+            : punchGap(outGaps, "Biometrics after Tivazo", "Biometrics before Tivazo"),
+        overall: punchMoment(outOverall),
+      },
     },
-    checkOut: {
-      first: punchMoment(tivOut),
-      second: punchMoment(bioOut),
-      gap:
-        outCombined.length === 0
-          ? { label: "—", minutes: null, people: 0, note: "No check-outs for this day" }
-          : punchGap(outGaps, "Biometrics after Tivazo", "Biometrics before Tivazo"),
-      overall: punchMoment(outCombined),
-    },
+    focus,
   };
+}
+
+export function buildPunchCompare(
+  bio: DashboardRosterPerson[],
+  tivazo: DashboardRosterPerson[],
+  options?: { todayDate?: string; undatedIsToday?: boolean; period?: "day" | "range" },
+): PunchCompare {
+  return buildPunchCompareBundle(bio, tivazo, options).compare;
 }
 
 function rankingTeam(person: DashboardRosterPerson): string {
@@ -352,33 +603,36 @@ function buildCoverage(
   teams: FilterOption[],
   scope: string,
 ): CoverageGaps {
-  const bioByEmail = new Map<string, DashboardRosterPerson>();
-  const tivByEmail = new Map<string, DashboardRosterPerson>();
+  const index = createIdentityIndex([...bio, ...tivazo].map(asIdentity));
+  const bioByCanon = new Map<string, DashboardRosterPerson>();
+  const tivByCanon = new Map<string, DashboardRosterPerson>();
   const bioOnly: CoveragePerson[] = [];
   const tivazoOnly: CoveragePerson[] = [];
   const linked = new Set<string>();
-  const focus = (person: DashboardRosterPerson) => inTeam(person, teamId, teams) && inMember(person, memberId);
+  const focus = (person: DashboardRosterPerson) => inTeam(person, teamId, teams) && inMember(person, memberId, index);
 
   for (const row of bio) {
-    if (row.email) bioByEmail.set(row.email.toLowerCase(), row);
+    const key = identityCanonical(index, asIdentity(row));
+    if (key) bioByCanon.set(key, row);
   }
   for (const row of tivazo) {
-    if (row.email) tivByEmail.set(row.email.toLowerCase(), row);
+    const key = identityCanonical(index, asIdentity(row));
+    if (key) tivByCanon.set(key, row);
   }
   for (const row of bio) {
     if (!focus(row)) continue;
-    const email = row.email.toLowerCase();
-    if (email && tivByEmail.has(email)) {
-      linked.add(email);
+    const key = identityCanonical(index, asIdentity(row));
+    if (key && tivByCanon.has(key)) {
+      linked.add(key);
       continue;
     }
     bioOnly.push(coveragePerson(row));
   }
   for (const row of tivazo) {
     if (!focus(row)) continue;
-    const email = row.email.toLowerCase();
-    if (email && bioByEmail.has(email)) {
-      linked.add(email);
+    const key = identityCanonical(index, asIdentity(row));
+    if (key && bioByCanon.has(key)) {
+      linked.add(key);
       continue;
     }
     tivazoOnly.push(coveragePerson(row));
@@ -452,6 +706,7 @@ export function scopeRosterPeople(
   if (!teamId && !memberId) return { bio, tivazo };
 
   const allTeams = [...teams, ...supervisors];
+  const index = createIdentityIndex([...bio, ...tivazo].map(asIdentity));
   const tivazoHit = supervisors.some((team) => sameKey(team.id, teamId) || sameKey(team.label, teamId));
   const bioHit = teams.some((team) => sameKey(team.id, teamId) || sameKey(team.label, teamId));
 
@@ -460,20 +715,20 @@ export function scopeRosterPeople(
   if (teamId) {
     if (tivazoHit) {
       teamTivazo = tivazo.filter((row) => inTeam(row, teamId, allTeams));
-      const emails = new Set(teamTivazo.map((row) => row.email.toLowerCase()).filter(Boolean));
-      teamBio = bio.filter((row) => emails.has(row.email.toLowerCase()));
+      const wanted = new Set(teamTivazo.map((row) => identityCanonical(index, asIdentity(row))).filter(Boolean));
+      teamBio = bio.filter((row) => wanted.has(identityCanonical(index, asIdentity(row))));
     } else if (bioHit) {
       teamBio = bio.filter((row) => inTeam(row, teamId, allTeams));
-      const emails = new Set(teamBio.map((row) => row.email.toLowerCase()).filter(Boolean));
-      teamTivazo = tivazo.filter((row) => emails.has(row.email.toLowerCase()));
+      const wanted = new Set(teamBio.map((row) => identityCanonical(index, asIdentity(row))).filter(Boolean));
+      teamTivazo = tivazo.filter((row) => wanted.has(identityCanonical(index, asIdentity(row))));
     } else {
       teamBio = [];
       teamTivazo = [];
     }
   }
   return {
-    bio: memberId ? teamBio.filter((row) => inMember(row, memberId)) : teamBio,
-    tivazo: memberId ? teamTivazo.filter((row) => inMember(row, memberId)) : teamTivazo,
+    bio: memberId ? teamBio.filter((row) => inMember(row, memberId, index)) : teamBio,
+    tivazo: memberId ? teamTivazo.filter((row) => inMember(row, memberId, index)) : teamTivazo,
   };
 }
 
@@ -506,7 +761,7 @@ export function scopeDashboard(
   const hourly = {
     biometrics: buildHourly(visibleBio, "in"),
     tivazo: buildHourly(visibleTivazo, "in"),
-    compare: buildPunch(visibleBio, visibleTivazo),
+    compare: buildPunchCompare(visibleBio, visibleTivazo),
   };
   const leaderboards = {
     present: buildLeaderboard(visibleTivazo, "present"),
@@ -521,13 +776,20 @@ export function scopeDashboard(
       totalMembers: unique.people,
       biomaticMembers: biomatic.totalMembers,
       tivazoMembers: tivazo.totalMembers,
-      avgWorkHours: tivazo.avgWorkHours,
-      avgClockIn:
-        hourly.compare.checkIn.overall.time !== "—"
-          ? hourly.compare.checkIn.overall.time
-          : hourly.biometrics.avgClockIn,
       avgAttendance: percent(unique.present, unique.people),
+      avgWorkHours: combinedWorkHoursFromRoster(visibleBio, visibleTivazo),
+      avgClockIn: combinedAvgClockInFromRoster(visibleBio, visibleTivazo),
       biomaticPresent: biomatic.presentMembers,
+      bioPresent: biomatic.presentMembers,
+      bioTotal: biomatic.totalMembers,
+      tivazoPresent: tivazo.presentMembers,
+      tivazoTotal: tivazo.totalMembers,
+      bioAttendance: percent(biomatic.presentMembers, biomatic.totalMembers),
+      tivazoAttendance: percent(tivazo.presentMembers, tivazo.totalMembers),
+      bioAvgWorkHours: averageBioDoorFromRoster(visibleBio),
+      tivazoAvgWorkHours: tivazo.avgWorkHours,
+      bioClockIn: hourly.compare.checkIn.first.time,
+      tivazoClockIn: hourly.compare.checkIn.second.time,
     },
     filters: {
       ...overview.filters,

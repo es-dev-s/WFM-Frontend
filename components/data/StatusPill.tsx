@@ -17,7 +17,9 @@ export function StatusPill({ value }: { value: string }) {
           compact === "onleave" ||
           compact === "halfday" ||
           compact === "late" ||
-          compact === "early"
+          compact === "early" ||
+          compact === "weeklyoff" ||
+          compact === "weekoff"
         ? "warn"
         : normalized === "absent" ||
             normalized === "inactive" ||
@@ -25,7 +27,7 @@ export function StatusPill({ value }: { value: string }) {
             normalized === "disabled" ||
             normalized === "no"
           ? "bad"
-          : "neutral";
+          : "neutral"; // Upcoming, Not on Bio/Tivazo, empty
 
   return (
     <span className="smp-pill" data-tone={tone} title={value || "—"}>

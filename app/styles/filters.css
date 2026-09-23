@@ -220,15 +220,15 @@
 
 .smp-range__presets {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 6px;
   padding-top: 2px;
 }
 
 .smp-range__presets .smp-chip {
-  flex: 1 1 0;
+  flex: 1 1 calc(50% - 6px);
   justify-content: center;
-  min-width: 0;
+  min-width: 88px;
 }
 
 .smp-range__nav {

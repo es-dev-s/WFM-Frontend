@@ -60,6 +60,7 @@ export function matchesPerson(
 export type PeopleScope = {
   memberId?: string;
   emails?: string[];
+  ids?: string[];
 };
 
 function inPeopleScope(
@@ -68,9 +69,32 @@ function inPeopleScope(
 ): boolean | null {
   const memberId = people?.memberId?.trim() || "";
   const emails = new Set((people?.emails ?? []).map(needle).filter(Boolean));
+  const ids = new Set((people?.ids ?? []).map(needle).filter(Boolean));
   if (memberId) return matchesPerson(row, memberId);
-  if (emails.size) return emails.has(needle(row.email || ""));
-  return null;
+  if (!emails.size && !ids.size) return null;
+  if (emails.size && emails.has(needle(row.email || ""))) return true;
+  if (
+    ids.size &&
+    [row.id, row.employeeId, row.memberId].some((value) => ids.has(needle(value || "")))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function uniqueLatestPeople(rows: DailyLogRow[]): DailyLogRow[] {
+  const byKey = new Map<string, DailyLogRow>();
+  for (const row of rows) {
+    const key = needle(row.memberId || row.email || row.id);
+    if (!key) continue;
+    const prev = byKey.get(key);
+    if (!prev || (row.date && (!prev.date || row.date > prev.date))) {
+      byKey.set(key, row);
+    }
+  }
+  return [...byKey.values()].sort((left, right) =>
+    left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+  );
 }
 
 function isBioLate(start: string): boolean {

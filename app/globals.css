@@ -9,3 +9,9 @@
 @import "./styles/auth.css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-background: var(--smp-bg);
+  --color-foreground: var(--smp-ink-primary);
+  --color-card: var(--smp-surface);
+}

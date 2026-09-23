@@ -1,8 +1,6 @@
 "use client";
 
 import type { DashboardMemberFocus } from "@/lib/api";
-import { bioMemberHref, dashboardSourceHref } from "@/lib/dashboard-links";
-import Link from "next/link";
 
 function fact(value: string): string {
   return value.trim() || "—";
@@ -19,7 +17,7 @@ function statusTone(value: string): "ok" | "warn" | "bad" | "neutral" {
   const compact = value.trim().toLowerCase().replace(/[\s_-]+/g, "");
   if (["present", "active", "tracking"].includes(compact)) return "ok";
   if (["leave", "onleave", "idle", "halfday"].includes(compact)) return "warn";
-  if (["absent", "offline", "inactive"].includes(compact)) return "bad";
+  if (["absent", "offline", "inactive", "missing"].includes(compact)) return "bad";
   return "neutral";
 }
 
@@ -34,19 +32,20 @@ function SourceColumn({
   status: string;
   rows: { label: string; value: string }[];
 }) {
-  const label = displayStatus(status);
-  const tone = statusTone(label);
-
+  const label = available ? displayStatus(status) : "Not linked";
+  const tone = available ? statusTone(label) : "neutral";
   return (
-    <article className="smp-dashboard-member__source" data-empty={available ? "false" : "true"}>
+    <article
+      className="smp-dashboard-member__source"
+      data-empty={available ? "false" : "true"}
+      data-source={title.toLowerCase()}
+    >
       <header className="smp-dashboard-member__source-head">
         <h3 className="smp-dashboard-member__source-title">{title}</h3>
-        {available ? (
-          <p className="smp-dashboard-member__status" data-tone={tone} title={label || "No status"}>
-            <span className="smp-dashboard-member__status-dot" aria-hidden="true" />
-            <span>{fact(label)}</span>
-          </p>
-        ) : null}
+        <p className="smp-dashboard-member__status" data-tone={tone} title={label || "No status"}>
+          <span className="smp-dashboard-member__status-dot" aria-hidden="true" />
+          <span>{fact(label)}</span>
+        </p>
       </header>
       {available ? (
         <dl className="smp-dashboard-member__facts">
@@ -58,7 +57,9 @@ function SourceColumn({
           ))}
         </dl>
       ) : (
-        <p className="smp-dashboard-member__empty">No record on this platform for the selected person.</p>
+        <p className="smp-dashboard-member__empty">
+          No record on this platform for the selected person.
+        </p>
       )}
     </article>
   );
@@ -72,35 +73,20 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
     <section className="smp-panel smp-dashboard-panel smp-dashboard-member" aria-label="Member overview">
       <header className="smp-dashboard-member__head">
         <div className="smp-dashboard-member__identity">
-          <p className="smp-dashboard-member__eyebrow">Member</p>
+          <p className="smp-dashboard-member__eyebrow">Selected member</p>
           <h2 className="smp-dashboard-member__name">{member.name || "Selected member"}</h2>
           <p className="smp-dashboard-member__meta">
-            {[member.email, member.employeeId].filter(Boolean).join(" · ") || "Linked across Biometrics and Tivazo"}
+            {[member.email, member.employeeId].filter(Boolean).join(" · ") ||
+              "Linked across Biometrics and Tivazo"}
           </p>
         </div>
         <div className="smp-dashboard-member__pills" aria-label="Data sources">
-          {hasBio ? (
-            <Link
-              href={bioMemberHref(member.employeeId || member.email)}
-              className="smp-dashboard-member__pill"
-              data-on="true"
-            >
-              Biometrics
-            </Link>
-          ) : (
-            <span className="smp-dashboard-member__pill" data-on="false">
-              Biometrics
-            </span>
-          )}
-          {hasTivazo ? (
-            <Link href={dashboardSourceHref("/tivazo", "total", { memberId: member.email || member.employeeId })} className="smp-dashboard-member__pill" data-on="true">
-              Tivazo
-            </Link>
-          ) : (
-            <span className="smp-dashboard-member__pill" data-on="false">
-              Tivazo
-            </span>
-          )}
+          <span className="smp-dashboard-member__pill" data-on={hasBio ? "true" : "false"}>
+            Biometrics {hasBio ? "linked" : "missing"}
+          </span>
+          <span className="smp-dashboard-member__pill" data-on={hasTivazo ? "true" : "false"}>
+            Tivazo {hasTivazo ? "linked" : "missing"}
+          </span>
         </div>
       </header>
       <div className="smp-dashboard-member__grid">

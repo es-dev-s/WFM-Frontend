@@ -37,6 +37,7 @@ export function HourlyChart({
 }) {
   const gradientId = useId().replace(/:/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
+  const rafPickRef = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   const seriesKey = `${source ?? ""}:${points.map((point) => `${point.hour}:${point.value}`).join(",")}`;
@@ -105,16 +106,23 @@ export function HourlyChart({
   const pickIndex = useCallback(
     (clientX: number) => {
       if (!svgRef.current) return;
-      const nearest = pickNearestIndex(
-        clientX,
-        svgRef.current.getBoundingClientRect(),
-        VIEW_W,
-        geometry.coords.map((point) => point.x),
-      );
-      setActiveIndex((prev) => (prev === nearest ? prev : nearest));
+      const svg = svgRef.current;
+      const xs = geometry.coords.map((point) => point.x);
+      if (rafPickRef.current != null) cancelAnimationFrame(rafPickRef.current);
+      rafPickRef.current = requestAnimationFrame(() => {
+        rafPickRef.current = null;
+        const nearest = pickNearestIndex(clientX, svg.getBoundingClientRect(), VIEW_W, xs);
+        setActiveIndex((prev) => (prev === nearest ? prev : nearest));
+      });
     },
     [geometry.coords],
   );
+
+  useEffect(() => {
+    return () => {
+      if (rafPickRef.current != null) cancelAnimationFrame(rafPickRef.current);
+    };
+  }, []);
 
   const active = !empty && activeIndex !== null ? geometry.coords[activeIndex] : null;
   const tooltipX = active ? Math.min(Math.max(active.x, 64), VIEW_W - 64) : 0;
@@ -163,10 +171,6 @@ export function HourlyChart({
                     : "Average hourly clock-in share"
               }
               onMouseMove={(event) => pickIndex(event.clientX)}
-              onTouchMove={(event) => {
-                const touch = event.touches[0];
-                if (touch) pickIndex(touch.clientX);
-              }}
             >
               <defs>
                 <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">

@@ -1,4 +1,24 @@
-import { APP_TIMEZONE, addDaysISO } from "@/lib/datetime";
+import { datePresets } from "@/lib/date-presets";
+import { APP_TIMEZONE, addDaysISO, monthWindows } from "@/lib/datetime";
+import {
+  historyEnd,
+  listDayLogsForKeys,
+  listHistoryLogs,
+  listMemberDays,
+  loadBioMember,
+  lookupPersonAliases,
+  lookupTeamPersonKeys,
+  missingSealedDays,
+  ingestedDays,
+  presenceByDay,
+  persistQuiet,
+  rangeIsStored,
+  saveAttendance,
+  type StoredMember,
+} from "@/lib/server/attendance/store";
+import { createSnapshotCache } from "@/lib/server/bff-cache";
+import { createIdentityIndex, identityCanonical, identityMatchesNeedle } from "@/lib/identity";
+import { clockLabelMinutes } from "@/lib/workday-clock";
 import type {
   AttentionItem,
   BiomaticSummary,
@@ -27,6 +47,8 @@ import type {
 } from "@/lib/api";
 import {
   averageHours,
+  averageWorkedHours,
+  trackedSecondsOf,
   asBool,
   asNumber,
   asString,
@@ -38,6 +60,7 @@ import {
   minuteInZone,
   isOpaqueId,
   percent,
+  isPresentAttendance,
   normalizeDayStatus,
   sameDayStatus,
   titleStatus,
@@ -80,6 +103,28 @@ const TREND_DAYS = 30;
 function rollingWindow(end = todayInAppZone(), days = TREND_DAYS) {
   return { start: addDaysISO(end, -(Math.max(1, days) - 1)), end };
 }
+
+/** Prefer the dashboard date filter; fall back to a trailing TREND_DAYS window. */
+function resolveTrendWindow(start: string | undefined, end: string | undefined, today = todayInAppZone()) {
+  const startOk = Boolean(start && /^\d{4}-\d{2}-\d{2}$/.test(start));
+  const endOk = Boolean(end && /^\d{4}-\d{2}-\d{2}$/.test(end));
+  if (startOk && endOk) {
+    let s = start!;
+    let e = end! <= today ? end! : today;
+    if (s > e) s = e;
+    return { start: s, end: e };
+  }
+  if (endOk) {
+    const e = end! <= today ? end! : today;
+    return { start: e, end: e };
+  }
+  if (startOk) {
+    const s = start! <= today ? start! : today;
+    return { start: s, end: s };
+  }
+  return rollingWindow(today, TREND_DAYS);
+}
+
 
 function asJsonMap(value: unknown): JsonMap {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -201,7 +246,7 @@ function bioMember(raw: JsonMap, date = ""): MemberDirectoryRow {
     attendance,
     status: attendance,
     dayStatus: attendance,
-    inTime: formatClock(asString(raw.start_time)),
+    inTime: attendanceIn(undefined, raw),
     workspaceId: "",
     groups: department ? [department] : [],
     allTimeWorkHour: 0,
@@ -240,8 +285,8 @@ function bioLog(raw: JsonMap, record?: JsonMap): DailyLogRow {
     active: status === "Present" ? "Yes" : "No",
     disabled: "No",
     status,
-    inTime: formatClock(asString(rec.start_time) || asString(raw.start_time)),
-    outTime: formatClock(asString(rec.end_time) || asString(raw.end_time)),
+    inTime: attendanceIn(rec, raw),
+    outTime: attendanceOut(rec, raw),
     trackedTime: trackedLabel,
     manualTime: manualLabel,
     breakTime: breakLabel(rec, raw),
@@ -322,89 +367,34 @@ async function fetchTivazoCatalog(_url: URL): Promise<GroupCatalogEntry[]> {
   return promise;
 }
 
-const LIVE_FRESH_MS = 4_000;
-const LIVE_STALE_MS = 20_000;
+const LIVE_FRESH_MS = 15_000;
+const LIVE_STALE_MS = 60_000;
 const HISTORY_FRESH_MS = 180_000;
 const HISTORY_STALE_MS = 1_800_000;
 
-type SnapshotEntry<T> = { key: string; at: number; value: T };
-type SnapshotTtl = { fresh: number; stale: number };
-
-function liveRangeTtl(key: string): SnapshotTtl {
+function liveRangeTtl(key: string): { fresh: number; stale: number } {
   const today = todayInAppZone();
   const [start, end] = key.split(":");
   if (!start || !end) return { fresh: LIVE_FRESH_MS, stale: LIVE_STALE_MS };
-  if (start === today || end === today || (start <= today && end >= today)) {
+  if (start === end && start === today) {
     return { fresh: LIVE_FRESH_MS, stale: LIVE_STALE_MS };
   }
   return { fresh: HISTORY_FRESH_MS, stale: HISTORY_STALE_MS };
 }
 
-function createSnapshotCache<T>(options: {
-  max?: number;
-  ttl: (key: string) => SnapshotTtl;
-}) {
-  const max = Math.max(1, options.max ?? 24);
-  const entries = new Map<string, SnapshotEntry<T>>();
-  const inflight = new Map<string, Promise<T>>();
-
-  function remember(key: string, value: T, at = Date.now()) {
-    if (entries.has(key)) entries.delete(key);
-    entries.set(key, { key, at, value });
-    while (entries.size > max) {
-      const oldest = entries.keys().next().value;
-      if (oldest === undefined || oldest === key) break;
-      entries.delete(oldest);
-    }
-  }
-
-  function refresh(key: string, load: () => Promise<T>): Promise<T> {
-    const pending = inflight.get(key);
-    if (pending) return pending;
-    const promise = load()
-      .then((value) => {
-        remember(key, value);
-        return value;
-      })
-      .catch((error: unknown) => {
-        const hit = entries.get(key);
-        if (hit) return hit.value;
-        throw error;
-      })
-      .finally(() => {
-        if (inflight.get(key) === promise) inflight.delete(key);
-      });
-    inflight.set(key, promise);
-    return promise;
-  }
-
-  return {
-    get(key: string, load: () => Promise<T>): Promise<T> {
-      const hit = entries.get(key);
-      if (hit) {
-        remember(key, hit.value, hit.at);
-        const age = Date.now() - hit.at;
-        const ttl = options.ttl(key);
-        if (age < ttl.fresh) return Promise.resolve(hit.value);
-        if (age < ttl.stale) {
-          void refresh(key, load);
-          return Promise.resolve(hit.value);
-        }
-      }
-      return refresh(key, load);
-    },
-  };
-}
-
 type TivazoLiveSnap = { members: JsonMap[]; groups: JsonMap[] };
 
-const bioLiveCache = createSnapshotCache<JsonMap[]>({ max: 24, ttl: liveRangeTtl });
-const tivazoLiveCache = createSnapshotCache<TivazoLiveSnap>({ max: 24, ttl: liveRangeTtl });
-const bioEmployeesCache = createSnapshotCache<JsonMap[]>({ max: 12, ttl: liveRangeTtl });
-const tivazoActivitiesCache = createSnapshotCache<JsonMap[]>({ max: 12, ttl: liveRangeTtl });
+const bioLiveCache = createSnapshotCache<JsonMap[]>({ max: 32, ttl: liveRangeTtl, redis: "bio-live" });
+const tivazoLiveCache = createSnapshotCache<TivazoLiveSnap>({ max: 32, ttl: liveRangeTtl, redis: "tivazo-live" });
+const bioEmployeesCache = createSnapshotCache<JsonMap[]>({ max: 16, ttl: liveRangeTtl, redis: "bio-employees" });
+const tivazoActivitiesCache = createSnapshotCache<JsonMap[]>({ max: 16, ttl: liveRangeTtl, redis: "tivazo-acts" });
+const dailyLogRowsCache = createSnapshotCache<DailyLogRow[]>({ max: 16, ttl: liveRangeTtl, redis: "bio-logs" });
+const activityRowsCache = createSnapshotCache<DailyLogRow[]>({ max: 16, ttl: liveRangeTtl, redis: "tivazo-logs" });
+const overviewCache = createSnapshotCache<DashboardOverview>({ max: 16, ttl: liveRangeTtl, redis: "overview" });
 const bioFiltersCache = createSnapshotCache<BioEnvelope>({
   max: 2,
   ttl: () => ({ fresh: 60_000, stale: 180_000 }),
+  redis: "bio-filters",
 });
 const trendSeriesCache = createSnapshotCache<Map<string, { clockIns: number; tracked: number }>>({
   max: 12,
@@ -426,7 +416,11 @@ async function loadUnfilteredBioLive(start: string, end: string): Promise<JsonMa
 }
 
 async function cachedBioLive(start: string, end: string): Promise<JsonMap[]> {
-  return bioLiveCache.get(`${start}:${end}`, () => loadUnfilteredBioLive(start, end));
+  return bioLiveCache.get(`${start}:${end}`, async () => {
+    const members = await loadUnfilteredBioLive(start, end);
+    if (start === end) persistQuiet(persistBioLiveDay(members, start), "bio-live");
+    return members;
+  });
 }
 
 async function loadUnfilteredTivazoLive(start: string, end: string): Promise<TivazoLiveSnap> {
@@ -447,7 +441,11 @@ async function loadUnfilteredTivazoLive(start: string, end: string): Promise<Tiv
 }
 
 async function cachedTivazoLive(start: string, end: string): Promise<TivazoLiveSnap> {
-  return tivazoLiveCache.get(`${start}:${end}`, () => loadUnfilteredTivazoLive(start, end));
+  return tivazoLiveCache.get(`${start}:${end}`, async () => {
+    const snap = await loadUnfilteredTivazoLive(start, end);
+    if (start === end) persistQuiet(persistTivazoLiveDay(snap.members, start), "tivazo-live");
+    return snap;
+  });
 }
 
 async function cachedBioEmployees(start: string, end: string): Promise<JsonMap[]> {
@@ -482,6 +480,131 @@ async function cachedTivazoActivities(start: string, end: string): Promise<JsonM
   );
 }
 
+function attendancesOf(row: JsonMap): JsonMap[] {
+  return Array.isArray(row.attendances) ? (row.attendances as JsonMap[]) : [];
+}
+
+function mergeEmployeeMonths(parts: JsonMap[][]): JsonMap[] {
+  const map = new Map<string, JsonMap>();
+  for (const list of parts) {
+    for (const employee of list) {
+      const id = asString(employee.id) || asString(employee.email).toLowerCase();
+      if (!id) continue;
+      const prev = map.get(id);
+      if (!prev) {
+        map.set(id, { ...employee, attendances: attendancesOf(employee).slice() });
+        continue;
+      }
+      const seen = new Set(attendancesOf(prev).map((rec) => asString(rec.date)));
+      const attendances = attendancesOf(prev).slice();
+      for (const rec of attendancesOf(employee)) {
+        const date = asString(rec.date);
+        if (!date || seen.has(date)) continue;
+        seen.add(date);
+        attendances.push(rec);
+      }
+      map.set(id, { ...prev, ...employee, attendances });
+    }
+  }
+  return [...map.values()];
+}
+
+async function loadBioEmployeesRange(start: string, end: string): Promise<JsonMap[]> {
+  const windows = monthWindows(start, end);
+  const employees =
+    windows.length <= 1
+      ? await cachedBioEmployees(start, end)
+      : mergeEmployeeMonths(await Promise.all(windows.map((window) => cachedBioEmployees(window.start, window.end))));
+  persistQuiet(persistBioEmployees(employees, start, end), "bio-employees");
+  return employees;
+}
+
+async function loadTivazoActivitiesRange(start: string, end: string): Promise<JsonMap[]> {
+  const windows = monthWindows(start, end);
+  const acts =
+    windows.length <= 1
+      ? await cachedTivazoActivities(start, end)
+      : (await Promise.all(windows.map((window) => cachedTivazoActivities(window.start, window.end)))).flat();
+  persistQuiet(persistTivazoActivities(acts, start, end), "tivazo-activities");
+  return acts;
+}
+
+function employeesToRangeMembers(employees: JsonMap[], start: string, end: string): JsonMap[] {
+  return employees.map((employee) => {
+    const recs = attendancesOf(employee).filter((rec) => {
+      const date = asString(rec.date);
+      return date >= start && date <= end;
+    });
+    const presentRecs = recs.filter(
+      (rec) => normalizeDayStatus(asString(rec.status) || asString(rec.attendance)) === "Present",
+    );
+    const first = presentRecs[0] ?? recs[0];
+    const last = presentRecs[presentRecs.length - 1] ?? recs[recs.length - 1];
+    return {
+      ...employee,
+      attendance: presentRecs.length ? "present" : recs.length ? asString(recs[0].status) || "absent" : "absent",
+      start_time: attendanceIn(first, employee),
+      end_time: attendanceOut(last, employee),
+    };
+  });
+}
+
+function activitiesToRangeMembers(
+  acts: JsonMap[],
+  liveMembers: JsonMap[],
+  start: string,
+  end: string,
+): JsonMap[] {
+  const byId = new Map<string, JsonMap>();
+  for (const member of liveMembers) {
+    const id = asString(member.id) || asString(member.email).toLowerCase();
+    if (!id) continue;
+    // Reset tracked aggregates — live partial-day seconds must not dilute range averages.
+    byId.set(id, {
+      ...member,
+      attendance: "absent",
+      tracked_seconds: 0,
+      present_days: 0,
+      tracked_label: "",
+    });
+  }
+  for (const act of acts) {
+    const date = asString(act.date);
+    if (date && (date < start || date > end)) continue;
+    const id = asString(act.memberID) || asString(act.email).toLowerCase();
+    if (!id) continue;
+    const prev =
+      byId.get(id) ||
+      ({
+        id: asString(act.memberID) || id,
+        email: asString(act.email),
+        name: asString(act.email) || "Unknown",
+        attendance: "absent",
+        groups: [],
+        tracked_seconds: 0,
+        present_days: 0,
+      } as JsonMap);
+    const dayTracked = trackedSecondsOf(act.trackedTime);
+    const dayStatus = normalizeDayStatus(asString(act.status) || asString(act.attendance));
+    // Salary-safe: never promote Half day / Leave / Absent to Present just because a punch exists.
+    const isPresent =
+      dayStatus === "Present" ||
+      (!dayStatus && (dayTracked > 0 || asNumber(act.clocked_in) > 0));
+    if (isPresent) {
+      prev.attendance = "present";
+      if (!asString(prev.clocked_in)) prev.clocked_in = clockLabel(asNumber(act.clocked_in));
+      const shot = clockLabel(asNumber(act.last_taken_screenshot));
+      if (shot) prev.last_screenshot = shot;
+      prev.tracked_seconds = asNumber(prev.tracked_seconds) + dayTracked;
+      // Denominator for Avg Work Hour: only days that actually contributed tracked time.
+      if (dayTracked > 0) prev.present_days = asNumber(prev.present_days) + 1;
+      prev.tracked_label = formatSecondsLabel(asNumber(prev.tracked_seconds));
+    }
+    byId.set(id, prev);
+  }
+  return [...byId.values()];
+}
+
 async function cachedBioFilters(start: string, end: string): Promise<BioEnvelope> {
   return bioFiltersCache.get("filters", () =>
     upstreamGet<BioEnvelope>(
@@ -503,18 +626,29 @@ function warmNeighborDays(day: string) {
   }
 }
 
-function warmLiveSnapshots(start: string, end: string) {
-  const tasks: Promise<unknown>[] = [
-    cachedBioLive(start, end).catch(() => undefined),
-    cachedTivazoLive(start, end).catch(() => undefined),
-  ];
-  if (start !== end) {
-    tasks.push(cachedBioEmployees(start, end).catch(() => undefined));
-    tasks.push(cachedTivazoActivities(start, end).catch(() => undefined));
-  }
-  void Promise.all(tasks).then(() => {
-    if (start === end) warmNeighborDays(start);
-  });
+function warmLiveSnapshots(_start: string, _end: string) {
+  const today = todayInAppZone();
+  void cachedBioLive(today, today).catch(() => undefined);
+  void cachedTivazoLive(today, today).catch(() => undefined);
+  warmNeighborDays(today);
+}
+
+function scopeCacheKey(): string {
+  if (!isTeamLead()) return "org";
+  const assigned = (leadAssignments() ?? [])
+    .map((item) => `${item.source}:${item.teamId}`)
+    .sort()
+    .join("|");
+  return assigned || "lead";
+}
+
+let presetWarmStarted = false;
+
+function schedulePresetWarm() {
+  if (presetWarmStarted) return;
+  presetWarmStarted = true;
+  const today = todayInAppZone();
+  warmLiveSnapshots(today, today);
 }
 
 function matchesLiveQuery(row: JsonMap, query: string): boolean {
@@ -666,8 +800,8 @@ function tivazoMemberRow(raw: JsonMap, date: string): DailyLogRow {
     active: live.active,
     disabled: asBool(raw.disabled) ? "Yes" : "No",
     status: attendance,
-    inTime: asString(raw.clocked_in),
-    outTime: asString(raw.last_screenshot),
+    inTime: memberClock(raw.clocked_in) || clockLabel(clockedMs),
+    outTime: memberClock(raw.last_screenshot) || clockLabel(shotMs),
     trackedTime: asString(raw.tracked_label) || formatSecondsLabel(asNumber(raw.tracked_seconds)),
     manualTime: asString(raw.manual_label) || formatSecondsLabel(asNumber(raw.manual_seconds)),
     breakTime: breakLabel(raw.activity, raw.user, raw),
@@ -709,7 +843,7 @@ function activityRow(act: JsonMap, member: JsonMap | undefined, fallbackDate: st
   const date = asString(act.date) || fallbackDate;
   const memberId = asString(act.memberID) || asString(member?.id);
   const groups = asStringArray(member?.groups);
-  const tracked = asNumber(act.trackedTime);
+  const tracked = trackedSecondsOf(act.trackedTime);
   const present =
     tracked > 0 || asNumber(act.clocked_in) > 0 || asNumber(act.last_taken_screenshot) > 0;
   const status = present ? "Present" : "Absent";
@@ -762,7 +896,70 @@ function clockLabel(ms: number): string {
 function memberClock(raw: unknown): string {
   const label = asString(raw);
   if (/^\d{1,2}:\d{2}/.test(label)) return formatClock(label);
-  return clockLabel(asNumber(raw));
+  return clockLabel(asNumber(raw)) || formatClock(label);
+}
+
+function attendanceIn(rec?: JsonMap, raw?: JsonMap): string {
+  return formatClock(
+    asString(rec?.start_time) ||
+      asString(rec?.in_time) ||
+      asString(raw?.start_time) ||
+      asString(raw?.in_time) ||
+      asString(raw?.clocked_in),
+  );
+}
+
+function attendanceOut(rec?: JsonMap, raw?: JsonMap): string {
+  return formatClock(
+    asString(rec?.end_time) ||
+      asString(rec?.out_time) ||
+      asString(raw?.end_time) ||
+      asString(raw?.out_time),
+  );
+}
+
+function withDayRange(url: URL, start: string, end: string): URL {
+  const next = new URL(url.toString());
+  next.searchParams.set("startDate", start);
+  next.searchParams.set("endDate", end);
+  next.searchParams.delete("start_date");
+  next.searchParams.delete("end_date");
+  return next;
+}
+
+function overlayLiveMembers(history: JsonMap[], live: JsonMap[]): JsonMap[] {
+  const map = new Map<string, JsonMap>();
+  const keyOf = (row: JsonMap) => asString(row.email).toLowerCase() || asString(row.id);
+  for (const row of history) {
+    const key = keyOf(row);
+    if (key) map.set(key, { ...row });
+    else map.set(`anon:${map.size}`, { ...row });
+  }
+  for (const row of live) {
+    const key = keyOf(row);
+    if (!key) continue;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, { ...row });
+      continue;
+    }
+    const livePresent = asString(row.attendance).toLowerCase() === "present";
+    const histPresent = asString(prev.attendance).toLowerCase() === "present";
+    map.set(key, {
+      ...prev,
+      ...row,
+      attendance: livePresent || histPresent ? "present" : asString(row.attendance) || asString(prev.attendance),
+      start_time: asString(row.start_time) || asString(prev.start_time),
+      end_time: asString(row.end_time) || asString(prev.end_time),
+      in_time: asString(row.in_time) || asString(prev.in_time),
+      clocked_in: asString(row.clocked_in) || asString(prev.clocked_in),
+      last_screenshot: asString(row.last_screenshot) || asString(prev.last_screenshot),
+      attendances: prev.attendances,
+      groups: asStringArray(row.groups).length ? asStringArray(row.groups) : asStringArray(prev.groups),
+      department: asString(row.department) || asString(prev.department),
+    });
+  }
+  return [...map.values()];
 }
 
 async function bioLive(url: URL, _signal?: AbortSignal, all = false) {
@@ -784,8 +981,7 @@ async function bioLive(url: URL, _signal?: AbortSignal, all = false) {
 
 async function bioEmployeesAll(url: URL, _signal?: AbortSignal): Promise<JsonMap[]> {
   const { start, end } = dateRange(url);
-  const rows = start === end ? await cachedBioLive(start, end) : await cachedBioEmployees(start, end);
-  return filterBioLiveMembers(rows, url);
+  return filterBioLiveMembers(await loadBioEmployeesRange(start, end), url);
 }
 
 async function tivazoLive(url: URL, _signal?: AbortSignal, all = false) {
@@ -828,6 +1024,7 @@ export async function handleBff(path: string[], request: Request): Promise<unkno
   const key = path.join("/");
   if (key === "health") return health(signal);
   const { start, end } = dateRange(url);
+  scheduleAttendanceBackfill();
   warmLiveSnapshots(start, end);
   const catalog = await fetchTivazoCatalog(url);
   return runWithCatalog(catalog, () => dispatchBff(path, url, signal));
@@ -845,6 +1042,8 @@ async function dispatchBff(path: string[], url: URL, signal?: AbortSignal): Prom
       return dashboardOverview(url, signal);
     case "dashboard/trend":
       return dashboardTrend(url, signal);
+    case "dashboard/presence":
+      return dashboardPresence(url);
     case "biomatic/summary":
       return biomaticSummary(url, signal);
     case "teams":
@@ -1032,11 +1231,36 @@ async function teamMembers(id: string, url: URL, signal?: AbortSignal): Promise<
     .map((row) => bioMember(row, dateRange(url).end));
 }
 
-async function members(url: URL, signal?: AbortSignal) {
+async function bioRosterForRange(start: string, end: string): Promise<JsonMap[]> {
+  const today = todayInAppZone();
+  if (start === end) return cachedBioLive(start, end);
+  const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
+  if (stored) {
+    const logs = await listHistoryLogs("biometrics", start, end, today).catch(() => [] as DailyLogRow[]);
+    let raw = employeesToRangeMembers(logsToBioMembers(logs), start, end);
+    if (end >= today) {
+      const live = await cachedBioLive(today, today).catch(() => [] as JsonMap[]);
+      raw = overlayLiveMembers(raw, live);
+    }
+    if (raw.length) return raw;
+  }
+  const employees = await loadBioEmployeesRange(start, end).catch(() => [] as JsonMap[]);
+  if (employees.length) {
+    let raw = employeesToRangeMembers(employees, start, end);
+    if (end >= today) {
+      const live = await cachedBioLive(today, today).catch(() => [] as JsonMap[]);
+      raw = overlayLiveMembers(raw, live);
+    }
+    return raw;
+  }
+  return cachedBioLive(start, end);
+}
+
+async function members(url: URL, _signal?: AbortSignal) {
   assertTeamAccess(readParam(url, "teamId", "department"), "", "biometrics");
   const { start, end } = dateRange(url);
-  const result = await bioLive(url, signal, true);
-  const scoped = filterMembersForLead(result.members ?? [], "biometrics");
+  const raw = await bioRosterForRange(start, end);
+  const scoped = filterMembersForLead(raw, "biometrics");
   const items = scoped.map((row) => bioMember(row, end || start));
   if (readParam(url, "all") === "1") {
     return { items, total: items.length, limit: items.length, offset: 0, hasMore: false };
@@ -1047,6 +1271,95 @@ async function members(url: URL, signal?: AbortSignal) {
 async function memberDetail(id: string, url: URL, signal?: AbortSignal): Promise<MemberDetail> {
   const decoded = decodeURIComponent(id);
   const { start, end } = dateRange(url);
+  const today = todayInAppZone();
+  const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
+  if (stored) {
+    const person = await loadBioMember(decoded);
+    const histEnd = historyEnd(end, today);
+    const logs = (
+      start <= histEnd
+        ? await listMemberDays("biometrics", person?.id || decoded, start, histEnd)
+        : []
+    ).filter((row) =>
+      memberInLeadScope(
+        {
+          id: row.employeeId,
+          email: row.email,
+          department: row.group,
+          teamId: row.group,
+          teamName: row.group,
+        },
+        undefined,
+        "biometrics",
+      ),
+    );
+    let dailyEntries: DailyEntry[] = logs
+      .filter((row) => row.date !== today)
+      .map((row) => ({
+        id: row.id,
+        date: row.date,
+        status: normalizeDayStatus(row.status),
+        inTime: row.inTime,
+        outTime: row.outTime,
+        occupancy: row.occupancy,
+        utilization: row.utilization,
+        wtr: row.wtr,
+      }));
+    if (end >= today) {
+      const live = await cachedBioLive(today, today).catch(() => [] as JsonMap[]);
+      const hit =
+        live.find((row) => asString(row.id) === (person?.id || decoded) || asString(row.email).toLowerCase() === (person?.email || decoded).toLowerCase()) ??
+        null;
+      if (hit) {
+        const recs = attendancesOf(hit);
+        const rec = recs.find((item) => asString(item.date) === today) ?? {
+          date: today,
+          status: asString(hit.attendance),
+          start_time: asString(hit.start_time),
+          end_time: asString(hit.end_time),
+        };
+        dailyEntries = [
+          {
+            id: `${asString(hit.id)}:${today}`,
+            date: today,
+            status: normalizeDayStatus(asString(rec.status) || asString(hit.attendance)),
+            inTime: attendanceIn(rec, hit),
+            outTime: attendanceOut(rec, hit),
+            occupancy: normalizeDayStatus(asString(rec.status) || asString(hit.attendance)) === "Present" ? "100%" : "0%",
+            utilization: utilization(asNumber(hit.tracked_seconds)),
+            wtr: utilization(asNumber(hit.tracked_seconds)),
+          },
+          ...dailyEntries.filter((row) => row.date !== today),
+        ];
+      }
+    }
+    dailyEntries.sort((a, b) => b.date.localeCompare(a.date));
+    if (person || dailyEntries.length) {
+      const raw = {
+        id: person?.id || logs[0]?.employeeId || decoded,
+        name: person?.name || logs[0]?.name || "Unknown",
+        email: person?.email || logs[0]?.email || "",
+        department: person?.department || logs[0]?.group || "",
+        role: person?.role || logs[0]?.role || "",
+        designation: person?.designation || logs[0]?.designation || "",
+        join_date: person?.joinedAt || "",
+        attendance: dailyEntries.some((row) => row.status === "Present") ? "present" : "absent",
+      };
+      const member = bioMember(raw, end);
+      const present = dailyEntries.filter((row) => row.status === "Present").length;
+      const absent = dailyEntries.filter((row) => row.status === "Absent").length;
+      return {
+        member,
+        cards: {
+          present: String(present),
+          absent: String(absent),
+          entries: String(dailyEntries.length),
+        },
+        occupancyTrend: dailyEntries.map((row) => (row.status === "Present" ? 100 : 0)).slice(0, 14),
+        dailyEntries,
+      };
+    }
+  }
   const payload = await upstreamGet<BioEnvelope>(
     BIO_ORIGIN,
     withParams(`/api/v1/employees/${encodeURIComponent(decoded)}`, {
@@ -1058,6 +1371,7 @@ async function memberDetail(id: string, url: URL, signal?: AbortSignal): Promise
   const raw = payload.employee;
   if (!raw) throw new BffError(404, "not_found", "Employee not found");
   if (!memberInLeadScope(raw, undefined, "biometrics")) throw new BffError(404, "not_found", "Employee not found");
+  persistQuiet(persistBioEmployees([raw], start, end), "bio-member");
   const member = bioMember(raw, end);
   const attendances = Array.isArray(raw.attendances) ? (raw.attendances as JsonMap[]) : [];
   const dailyEntries: DailyEntry[] = attendances
@@ -1065,8 +1379,8 @@ async function memberDetail(id: string, url: URL, signal?: AbortSignal): Promise
       id: `${member.id}:${asString(rec.date)}`,
       date: asString(rec.date),
       status: normalizeDayStatus(asString(rec.status)),
-      inTime: formatClock(asString(rec.start_time)),
-      outTime: formatClock(asString(rec.end_time)),
+      inTime: attendanceIn(rec),
+      outTime: attendanceOut(rec),
       occupancy: normalizeDayStatus(asString(rec.status)) === "Present" ? "100%" : "0%",
       utilization: utilization(asNumber(rec.tivazo_tracked_time)),
       wtr: utilization(asNumber(rec.tivazo_tracked_time)),
@@ -1121,17 +1435,401 @@ function explodeLogs(employees: JsonMap[], start: string, end: string): DailyLog
   });
 }
 
+function explodeEvidence(employees: JsonMap[]): DailyLogRow[] {
+  const rows: DailyLogRow[] = [];
+  for (const employee of employees) {
+    const attendances = attendancesOf(employee);
+    if (!attendances.length) continue;
+    for (const rec of attendances) {
+      if (!asString(rec.date)) continue;
+      rows.push(bioLog(employee, rec));
+    }
+  }
+  return rows;
+}
+
+function bioStoredMember(raw: JsonMap): StoredMember | null {
+  const id = asString(raw.id);
+  if (!id) return null;
+  const department = asString(raw.department);
+  return {
+    id,
+    email: asString(raw.email).toLowerCase(),
+    name: asString(raw.name) || "Unknown",
+    department,
+    groups: department ? [department] : [],
+    role: asString(raw.role),
+    designation: asString(raw.designation),
+    joinedAt: asString(raw.join_date),
+    workspaceId: "",
+    disabled: false,
+  };
+}
+
+function tivazoStoredMember(raw: JsonMap): StoredMember | null {
+  const id = asString(raw.id) || asString(raw.email).toLowerCase();
+  if (!id) return null;
+  return {
+    id,
+    email: asString(raw.email).toLowerCase(),
+    name: asString(raw.name) || asString(raw.email) || "Unknown",
+    department: "",
+    groups: asStringArray(raw.groups),
+    role: asString(raw.role),
+    designation: asString(raw.designation),
+    joinedAt: "",
+    workspaceId: asString(raw.workspace_id),
+    disabled: asBool(raw.disabled),
+  };
+}
+
+function coveredHistoryDays(start: string, end: string, today: string, hasEvidence: boolean): string[] {
+  if (!hasEvidence) return [];
+  return enumerateDays(start, end).filter((day) => day < today);
+}
+
+async function persistBioEmployees(employees: JsonMap[], start: string, end: string): Promise<void> {
+  const today = todayInAppZone();
+  const logs = explodeEvidence(employees).filter((row) => row.date >= start && row.date <= end);
+  const evidence = logs.length > 0;
+  await saveAttendance({
+    source: "biometrics",
+    members: employees.map(bioStoredMember).filter((row): row is StoredMember => Boolean(row)),
+    logs,
+    coveredDays: coveredHistoryDays(start, end, today, evidence),
+    today,
+  });
+}
+
+async function persistBioLiveDay(members: JsonMap[], day: string): Promise<void> {
+  const today = todayInAppZone();
+  const logs = members.map((member) =>
+    bioLog(member, {
+      date: day,
+      status: asString(member.attendance) || "absent",
+      start_time: asString(member.start_time),
+      end_time: asString(member.end_time),
+    }),
+  );
+  await saveAttendance({
+    source: "biometrics",
+    members: members.map(bioStoredMember).filter((row): row is StoredMember => Boolean(row)),
+    logs,
+    coveredDays:
+      day < today && logs.some((row) => row.status === "Present" || row.inTime || row.outTime) ? [day] : [],
+    today,
+  });
+}
+
+async function persistTivazoActivities(acts: JsonMap[], start: string, end: string): Promise<void> {
+  const today = todayInAppZone();
+  const snap = await cachedTivazoLive(today, today).catch(() => ({ members: [] as JsonMap[], groups: [] as JsonMap[] }));
+  const membersById = new Map<string, JsonMap>();
+  const membersByEmail = new Map<string, JsonMap>();
+  const storedMembers: StoredMember[] = [];
+  for (const member of snap.members) {
+    const stored = tivazoStoredMember(member);
+    if (stored) storedMembers.push(stored);
+    membersById.set(asString(member.id), member);
+    if (asString(member.email)) membersByEmail.set(asString(member.email).toLowerCase(), member);
+  }
+  const logs = acts
+    .filter((act) => {
+      const date = asString(act.date);
+      return date >= start && date <= end;
+    })
+    .map((act) =>
+      activityRow(
+        act,
+        membersById.get(asString(act.memberID)) || membersByEmail.get(asString(act.email).toLowerCase()),
+        asString(act.date) || end,
+      ),
+    );
+  await saveAttendance({
+    source: "tivazo",
+    members: storedMembers,
+    logs,
+    coveredDays: coveredHistoryDays(start, end, today, snap.members.length > 0 || acts.length > 0),
+    today,
+  });
+}
+
+async function persistTivazoLiveDay(members: JsonMap[], day: string): Promise<void> {
+  const today = todayInAppZone();
+  await saveAttendance({
+    source: "tivazo",
+    members: members.map(tivazoStoredMember).filter((row): row is StoredMember => Boolean(row)),
+    logs: members.map((member) => tivazoMemberRow(member, day)),
+    coveredDays: day < today ? [day] : [],
+    today,
+  });
+}
+
+function overlayDay(stored: DailyLogRow[], live: DailyLogRow[], day: string): DailyLogRow[] {
+  if (!live.length) return stored;
+  const kept = stored.filter((row) => row.date !== day);
+  return [...live, ...kept].sort((a, b) => {
+    if (a.date !== b.date) return b.date.localeCompare(a.date);
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function logsToBioMembers(rows: DailyLogRow[]): JsonMap[] {
+  const map = new Map<string, JsonMap>();
+  for (const row of rows) {
+    const id = row.employeeId || row.memberId;
+    if (!id) continue;
+    const prev =
+      map.get(id) ??
+      ({
+        id,
+        name: row.name,
+        email: row.email,
+        department: row.group,
+        role: row.role,
+        designation: row.designation,
+        attendance: "absent",
+        groups: row.groups,
+        attendances: [] as JsonMap[],
+      } as JsonMap);
+    const recs = Array.isArray(prev.attendances) ? (prev.attendances as JsonMap[]) : [];
+    recs.push({
+      date: row.date,
+      status: row.status,
+      start_time: row.inTime,
+      end_time: row.outTime,
+    });
+    prev.attendances = recs;
+    prev.name = row.name || asString(prev.name);
+    prev.email = row.email || asString(prev.email);
+    prev.department = row.group || asString(prev.department);
+    if (row.status === "Present") {
+      prev.attendance = "present";
+      if (!asString(prev.start_time) && row.inTime) prev.start_time = row.inTime;
+      if (row.outTime) prev.end_time = row.outTime;
+    }
+    map.set(id, prev);
+  }
+  return [...map.values()];
+}
+
+function logsToTivazoMembers(rows: DailyLogRow[], liveMembers: JsonMap[]): JsonMap[] {
+  const byId = new Map<string, JsonMap>();
+  for (const member of liveMembers) {
+    const id = asString(member.id) || asString(member.email).toLowerCase();
+    if (!id) continue;
+    // Reset tracked aggregates — stored day logs are the salary source of truth.
+    byId.set(id, {
+      ...member,
+      attendance: "absent",
+      tracked_seconds: 0,
+      present_days: 0,
+      tracked_label: "",
+    });
+  }
+  for (const row of rows) {
+    const id = row.memberId || row.email.toLowerCase();
+    if (!id) continue;
+    const prev =
+      byId.get(id) ||
+      ({
+        id: row.memberId || id,
+        email: row.email,
+        name: row.name,
+        attendance: "absent",
+        groups: row.groups,
+        designation: row.designation,
+        role: row.role,
+        tracked_seconds: 0,
+        present_days: 0,
+      } as JsonMap);
+    prev.name = row.name || asString(prev.name);
+    prev.email = row.email || asString(prev.email);
+    prev.groups = row.groups.length ? row.groups : asStringArray(prev.groups);
+    prev.designation = row.designation || asString(prev.designation);
+    if (normalizeDayStatus(row.status) === "Present") {
+      prev.attendance = "present";
+      if (!asString(prev.clocked_in) && row.inTime) prev.clocked_in = row.inTime;
+      if (row.outTime) prev.last_screenshot = row.outTime;
+      const dayTracked = trackedSecondsOf(row.trackedTime);
+      prev.tracked_seconds = asNumber(prev.tracked_seconds) + dayTracked;
+      if (dayTracked > 0) prev.present_days = asNumber(prev.present_days) + 1;
+      prev.tracked_label = formatSecondsLabel(asNumber(prev.tracked_seconds));
+    }
+    byId.set(id, prev);
+  }
+  return [...byId.values()];
+}
+
+const ingestWindows = new Map<string, Promise<void>>();
+
+function ingestWindow(source: "biometrics" | "tivazo", start: string, end: string): Promise<void> {
+  const key = `${source}:${start}:${end}`;
+  const pending = ingestWindows.get(key);
+  if (pending) return pending;
+  const promise = (async () => {
+    if (source === "biometrics") {
+      const employees = await cachedBioEmployees(start, end);
+      await persistBioEmployees(employees, start, end);
+      return;
+    }
+    const acts = await cachedTivazoActivities(start, end);
+    await persistTivazoActivities(acts, start, end);
+  })()
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown error";
+      console.error(`attendance ingest ${key}`, message);
+    })
+    .finally(() => {
+      if (ingestWindows.get(key) === promise) ingestWindows.delete(key);
+    });
+  ingestWindows.set(key, promise);
+  return promise;
+}
+
+async function ensureStoredRange(source: "biometrics" | "tivazo", start: string, end: string): Promise<boolean> {
+  const today = todayInAppZone();
+  try {
+    const missing = await missingSealedDays(source, start, end, today);
+    if (missing.length) {
+      const windows = monthWindows(missing[0], missing[missing.length - 1]);
+      for (const window of windows) {
+        await ingestWindow(source, window.start, window.end);
+      }
+    }
+    return rangeIsStored(source, start, end, today);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.error("attendance ensure range", source, message);
+    return false;
+  }
+}
+
+let backfillStarted = false;
+
+function scheduleAttendanceBackfill() {
+  if (backfillStarted) return;
+  backfillStarted = true;
+  void (async () => {
+    const range = datePresets().find((item) => item.id === "last3Months");
+    if (!range) return;
+    const windows = monthWindows(range.start, range.end);
+    for (const window of windows) {
+      await ingestWindow("biometrics", window.start, window.end);
+      await ingestWindow("tivazo", window.start, window.end);
+    }
+  })().catch((error) => {
+    backfillStarted = false;
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.error("attendance backfill", message);
+  });
+}
+
+function bioLogInLeadScope(row: DailyLogRow): boolean {
+  return memberInLeadScope(
+    {
+      id: row.employeeId,
+      email: row.email,
+      department: row.group,
+      teamId: row.group,
+      teamName: row.group,
+    },
+    undefined,
+    "biometrics",
+  );
+}
+
 async function dailyLogs(url: URL, signal?: AbortSignal) {
-  assertTeamAccess(readParam(url, "teamId", "department"), "", "biometrics");
+  assertTeamAccess(readParam(url, "teamId", "department"));
   const { start, end } = dateRange(url);
   const fetchUrl = new URL(url.toString());
   fetchUrl.searchParams.delete("status");
   fetchUrl.searchParams.delete("dayStatus");
-  const employees = filterMembersForLead(await bioEmployeesAll(fetchUrl, signal), "biometrics");
-  let rows = explodeLogs(employees, start, end);
+  fetchUrl.searchParams.delete("teamId");
+  fetchUrl.searchParams.delete("department");
+  const today = todayInAppZone();
+  const q = readParam(url, "q");
+  const teamId = readParam(url, "teamId", "department");
+  const aliases = q ? await lookupPersonAliases(q).catch(() => [q]) : [];
+  const memberScoped = isExactPersonQuery(q, aliases) && start !== end;
+  const teamKeys =
+    !memberScoped && teamId && teamId !== "all" && start !== end
+      ? await lookupTeamPersonKeys(teamId).catch(() => [])
+      : [];
+  let rows: DailyLogRow[] | null = null;
+  let identityScoped = false;
+  if (memberScoped) {
+    const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
+    if (stored) {
+      const keys = aliases.length ? aliases : [q];
+      rows = (await listDayLogsForKeys("biometrics", start, historyEnd(end, today), keys)).filter(
+        bioLogInLeadScope,
+      );
+      if (end >= today) {
+        const liveEmployees = filterMembersForLead(
+          await bioEmployeesAll(withDayRange(fetchUrl, today, today), signal),
+          "biometrics",
+        );
+        rows = overlayDay(
+          rows,
+          explodeLogs(liveEmployees, today, today).filter((row) => activityRowMatchesKeys(row, keys)),
+          today,
+        );
+      }
+      identityScoped = true;
+    }
+  } else if (teamKeys.length) {
+    const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
+    if (stored) {
+      rows = (await listDayLogsForKeys("biometrics", start, historyEnd(end, today), teamKeys)).filter(
+        bioLogInLeadScope,
+      );
+      if (end >= today) {
+        const liveEmployees = filterMembersForLead(
+          await bioEmployeesAll(withDayRange(fetchUrl, today, today), signal),
+          "biometrics",
+        );
+        rows = overlayDay(
+          rows,
+          explodeLogs(liveEmployees, today, today).filter((row) => activityRowMatchesKeys(row, teamKeys)),
+          today,
+        );
+      }
+      identityScoped = true;
+    }
+  }
+  if (!rows) {
+    rows = await dailyLogRowsCache.get(`${start}:${end}:${scopeCacheKey()}`, async () => {
+      if (start === today && end === today) {
+        const employees = filterMembersForLead(await bioEmployeesAll(fetchUrl, signal), "biometrics");
+        return explodeLogs(employees, today, today);
+      }
+      const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
+      if (stored) {
+        let saved = await listHistoryLogs("biometrics", start, end, today);
+        saved = saved.filter(bioLogInLeadScope);
+        if (end >= today) {
+          const liveEmployees = filterMembersForLead(
+            await bioEmployeesAll(withDayRange(fetchUrl, today, today), signal),
+            "biometrics",
+          );
+          saved = overlayDay(saved, explodeLogs(liveEmployees, today, today), today);
+        }
+        return saved;
+      }
+      const employees = filterMembersForLead(await bioEmployeesAll(fetchUrl, signal), "biometrics");
+      return explodeLogs(employees, start, end);
+    });
+  }
+  if (teamId && teamId !== "all" && !identityScoped) {
+    rows = rows.filter((row) => activityRowInGroup(row, teamId));
+  }
   const status = readParam(url, "status");
   if (status) {
     rows = rows.filter((row) => sameDayStatus(row.status, status));
+  }
+  if (q) {
+    rows = rows.filter((row) => (identityScoped ? activityRowMatchesKeys(row, aliases.length ? aliases : [q]) : activityRowMatchesQuery(row, q)));
   }
   if (readParam(url, "all") === "1") {
     return { items: rows, total: rows.length, limit: rows.length, offset: 0, hasMore: false };
@@ -1144,6 +1842,29 @@ async function dailyLogDetail(id: string, url: URL, signal?: AbortSignal): Promi
   const match = id.match(/^(.*):(\d{4}-\d{2}-\d{2})$/);
   const employeeId = match?.[1] || id;
   const date = match?.[2] || dateRange(url).end;
+  const today = todayInAppZone();
+  if (date !== today) {
+    const stored = await listMemberDays("biometrics", employeeId, date, date).catch(() => []);
+    const saved = stored.find((row) => row.date === date);
+    if (saved) {
+      if (
+        !memberInLeadScope(
+          {
+            id: saved.employeeId,
+            email: saved.email,
+            department: saved.group,
+            teamId: saved.group,
+            teamName: saved.group,
+          },
+          undefined,
+          "biometrics",
+        )
+      ) {
+        throw new BffError(404, "not_found", "Daily log not found");
+      }
+      return saved;
+    }
+  }
   url.searchParams.set("startDate", date);
   url.searchParams.set("endDate", date);
   const payload = await upstreamGet<BioEnvelope>(
@@ -1157,6 +1878,7 @@ async function dailyLogDetail(id: string, url: URL, signal?: AbortSignal): Promi
   const raw = payload.employee;
   if (!raw) throw new BffError(404, "not_found", "Daily log not found");
   if (!memberInLeadScope(raw, undefined, "biometrics")) throw new BffError(404, "not_found", "Daily log not found");
+  persistQuiet(persistBioEmployees([raw], date, date), "bio-log");
   const attendances = Array.isArray(raw.attendances) ? (raw.attendances as JsonMap[]) : [];
   const rec = attendances.find((item) => asString(item.date) === date) ?? attendances[0];
   return bioLog(raw, rec);
@@ -1193,10 +1915,29 @@ function activityRowMatchesQuery(row: DailyLogRow, query: string): boolean {
   );
 }
 
+function activityRowMatchesKeys(row: DailyLogRow, keys: string[]): boolean {
+  const aliases = keys.map((key) => key.trim().toLowerCase()).filter(Boolean);
+  if (!aliases.length) return true;
+  const fields = [row.name, row.email, row.memberId, row.employeeId, row.id]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+  return aliases.some((alias) => fields.some((field) => field === alias || field.includes(alias)));
+}
+
+function isExactPersonQuery(query: string, aliases: string[]): boolean {
+  const needle = query.trim();
+  if (!needle) return false;
+  if (needle.includes("@") || aliases.some((alias) => alias.includes("@"))) return true;
+  if (aliases.length >= 2) return true;
+  return /^[a-z0-9._-]{6,}$/i.test(needle);
+}
+
 async function loadTivazoActivityRows(url: URL, _signal?: AbortSignal): Promise<DailyLogRow[]> {
   const { start, end } = dateRange(url);
+  const today = todayInAppZone();
+  const liveDay = start === end ? start : today;
   const [snap, bioByEmail] = await Promise.all([
-    cachedTivazoLive(start, end),
+    cachedTivazoLive(liveDay, liveDay),
     settled(bioEmployeeIdsByEmail()),
   ]);
 
@@ -1212,30 +1953,107 @@ async function loadTivazoActivityRows(url: URL, _signal?: AbortSignal): Promise<
   const employeeIds = bioByEmail.ok ? bioByEmail.value : new Map<string, string>();
   const q = readParam(url, "q");
   const group = readParam(url, "group", "teamId");
+  const aliases = q ? await lookupPersonAliases(q).catch(() => [q]) : [];
+  const memberScoped = isExactPersonQuery(q, aliases);
+  const teamKeys =
+    !memberScoped && group && group !== "all" && start !== end
+      ? await lookupTeamPersonKeys(group).catch(() => [])
+      : [];
 
   let rows: DailyLogRow[];
+  let identityScoped = false;
   if (start === end) {
-    rows = filterTivazoLiveMembers(scopedMembers, url).map((member) =>
-      decorateTivazoRow(tivazoMemberRow(member, end), catalog, employeeIds),
-    );
+    if (start === today) {
+      rows = filterTivazoLiveMembers(scopedMembers, url).map((member) =>
+        decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds),
+      );
+    } else {
+      const stored = await rangeIsStored("tivazo", start, end, today).catch(() => false);
+      if (stored) {
+        rows = (await listHistoryLogs("tivazo", start, end, today))
+          .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+          .filter((row) => rowInLeadScope(row))
+          .filter((row) => activityRowMatchesQuery(row, q))
+          .filter((row) => activityRowInGroup(row, group));
+      } else {
+        rows = filterTivazoLiveMembers(scopedMembers, url).map((member) =>
+          decorateTivazoRow(tivazoMemberRow(member, end), catalog, employeeIds),
+        );
+      }
+    }
   } else {
-    const actsPage = await cachedTivazoActivities(start, end);
-    rows = actsPage
-      .map((act) =>
-        decorateTivazoRow(
-          activityRow(
-            act,
-            membersById.get(asString(act.memberID)) ||
-              membersByEmail.get(asString(act.email).toLowerCase()),
-            end,
-          ),
-          catalog,
-          employeeIds,
-        ),
-      )
-      .filter((row) => rowInLeadScope(row))
-      .filter((row) => activityRowMatchesQuery(row, q))
-      .filter((row) => activityRowInGroup(row, group));
+    const stored = (memberScoped || teamKeys.length)
+      ? await rangeIsStored("tivazo", start, end, today).catch(() => false)
+      : false;
+    if (memberScoped && stored) {
+      const keys = aliases.length ? aliases : [q];
+      const saved = (await listDayLogsForKeys("tivazo", start, historyEnd(end, today), keys))
+        .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+        .filter((row) => rowInLeadScope(row));
+      rows = overlayDay(
+        saved,
+        end >= today
+          ? scopedMembers
+              .map((member) => decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds))
+              .filter((row) => activityRowMatchesKeys(row, keys))
+          : [],
+        today,
+      );
+      identityScoped = true;
+    } else if (teamKeys.length && stored) {
+      const saved = (await listDayLogsForKeys("tivazo", start, historyEnd(end, today), teamKeys))
+        .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+        .filter((row) => rowInLeadScope(row));
+      rows = overlayDay(
+        saved,
+        end >= today
+          ? scopedMembers
+              .map((member) => decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds))
+              .filter((row) => activityRowMatchesKeys(row, teamKeys))
+          : [],
+        today,
+      );
+      identityScoped = true;
+    } else {
+      rows = await activityRowsCache.get(`${start}:${end}:${scopeCacheKey()}`, async () => {
+        const rangeStored = await rangeIsStored("tivazo", start, end, today).catch(() => false);
+        if (rangeStored) {
+          const saved = (await listHistoryLogs("tivazo", start, end, today))
+            .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+            .filter((row) => rowInLeadScope(row));
+          return overlayDay(
+            saved,
+            end >= today
+              ? scopedMembers.map((member) => decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds))
+              : [],
+            today,
+          );
+        }
+        const actsPage = await loadTivazoActivitiesRange(start, end);
+        return actsPage
+          .map((act) =>
+            decorateTivazoRow(
+              activityRow(
+                act,
+                membersById.get(asString(act.memberID)) ||
+                  membersByEmail.get(asString(act.email).toLowerCase()),
+                end,
+              ),
+              catalog,
+              employeeIds,
+            ),
+          )
+          .filter((row) => rowInLeadScope(row));
+      });
+    }
+    if (q) {
+      rows = rows.filter((row) =>
+        identityScoped ? activityRowMatchesKeys(row, aliases.length ? aliases : [q]) : activityRowMatchesQuery(row, q),
+      );
+    }
+    if (!identityScoped) {
+      rows = rows.filter((row) => activityRowInGroup(row, group));
+    }
   }
 
   const status = readParam(url, "status");
@@ -1253,7 +2071,7 @@ async function loadTivazoActivityRows(url: URL, _signal?: AbortSignal): Promise<
 }
 
 async function tivazoActivities(url: URL, signal?: AbortSignal) {
-  assertTeamAccess(readParam(url, "group", "teamId"), "", "tivazo");
+  assertTeamAccess(readParam(url, "group", "teamId"));
   const rows = await loadTivazoActivityRows(url, signal);
   const presentIds = new Set<string>();
   const seenIds = new Set<string>();
@@ -1407,12 +2225,9 @@ function resolveTrendGroup(teamId: string, groups: FilterOption[]): string | und
 }
 
 function matchesMember(raw: JsonMap, needle: string): boolean {
-  const want = needle.toLowerCase();
-  if (!want) return true;
-  return (
-    memberEmail(raw) === want ||
-    asString(raw.id).toLowerCase() === want ||
-    asString(raw.name).toLowerCase() === want
+  return identityMatchesNeedle(
+    { email: asString(raw.email), id: asString(raw.id), name: asString(raw.name) },
+    needle,
   );
 }
 
@@ -1422,28 +2237,49 @@ function unionByEmail(
   allBio: JsonMap[],
   allTivazo: JsonMap[],
 ): { bio: JsonMap[]; tivazo: JsonMap[] } {
-  const emails = new Set<string>();
+  const index = createIdentityIndex([
+    ...allBio.map((row) => ({ ...row, source: "bio" as const, email: asString(row.email), id: asString(row.id), name: asString(row.name) })),
+    ...allTivazo.map((row) => ({ ...row, source: "tivazo" as const, email: asString(row.email), id: asString(row.id), name: asString(row.name) })),
+  ]);
+  const wanted = new Set<string>();
   for (const row of [...scopedBio, ...scopedTivazo]) {
-    const email = memberEmail(row);
-    if (email) emails.add(email);
+    const key = identityCanonical(index, {
+      email: asString(row.email),
+      id: asString(row.id),
+      name: asString(row.name),
+      source: scopedBio.includes(row) ? "bio" : "tivazo",
+    });
+    if (key) wanted.add(key);
   }
   const bio = new Set(scopedBio);
   const tivazo = new Set(scopedTivazo);
-  if (emails.size) {
+  if (wanted.size) {
     for (const row of allBio) {
-      if (emails.has(memberEmail(row))) bio.add(row);
+      if (wanted.has(identityCanonical(index, { email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "bio" }))) {
+        bio.add(row);
+      }
     }
     for (const row of allTivazo) {
-      if (emails.has(memberEmail(row))) tivazo.add(row);
+      if (wanted.has(identityCanonical(index, { email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "tivazo" }))) {
+        tivazo.add(row);
+      }
     }
   }
   return { bio: [...bio], tivazo: [...tivazo] };
 }
 
 function mergeMemberOptions(bio: JsonMap[], tivazo: JsonMap[]): FilterOption[] {
+  const index = createIdentityIndex([
+    ...bio.map((row) => ({ email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "bio" as const })),
+    ...tivazo.map((row) => ({ email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "tivazo" as const })),
+  ]);
   const byId = new Map<string, FilterOption>();
   for (const raw of [...tivazo, ...bio]) {
-    const id = memberKey(raw);
+    const id = identityCanonical(index, {
+      email: asString(raw.email),
+      id: asString(raw.id),
+      name: asString(raw.name),
+    });
     const label = asString(raw.name);
     if (!id || !label || byId.has(id)) continue;
     byId.set(id, { id, label });
@@ -1584,6 +2420,98 @@ function recountBio(members: JsonMap[]): BiomaticSummary {
   };
 }
 
+
+function bioDoorSpanSeconds(row: JsonMap): number {
+  const start = attendanceIn(undefined, row) || memberClock(row.clocked_in);
+  const end = attendanceOut(undefined, row) || memberClock(row.last_screenshot);
+  const inPunch = punchFromClock(start) ?? punchFromMillis(asNumber(row.clocked_in));
+  const outPunch = punchFromClock(end) ?? punchFromMillis(asNumber(row.last_screenshot));
+  if (!inPunch || !outPunch) return 0;
+  const inM = inPunch.hour * 60 + inPunch.minute;
+  const outM = outPunch.hour * 60 + outPunch.minute;
+  let delta = outM - inM;
+  if (delta <= 0) delta += 1440;
+  // Guard absurd spans (overnight noise / missing out)
+  if (delta <= 0 || delta > 16 * 60) return 0;
+  return delta * 60;
+}
+
+function averageBioDoorFromMembers(members: JsonMap[]): string {
+  let total = 0;
+  let people = 0;
+  for (const row of members) {
+    if (normalizeDayStatus(asString(row.attendance)) !== "Present") continue;
+    const seconds = bioDoorSpanSeconds(row);
+    if (seconds <= 0) continue;
+    total += seconds;
+    people += 1;
+  }
+  return averageWorkedHours(total, people);
+}
+
+function workSpanSeconds(inMinutes: number | null, outMinutes: number | null): number {
+  if (inMinutes == null || outMinutes == null) return 0;
+  let delta = outMinutes - inMinutes;
+  if (delta <= 0) delta += 1440;
+  // Guard absurd spans (overnight noise / missing out)
+  if (delta <= 0 || delta > 16 * 60) return 0;
+  return delta * 60;
+}
+
+/** Combined Avg Work Hour: one in→out span per person (earliest in, latest out across Bio ∪ Tivazo). */
+function combinedWorkHours(bio: JsonMap[], tivazo: JsonMap[]): string {
+  const bioMap = indexMembers(bio);
+  const tivMap = indexMembers(tivazo);
+  const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
+  let total = 0;
+  let people = 0;
+  for (const key of keys) {
+    const bioRow = bioMap.get(key);
+    const tivRow = tivMap.get(key);
+    const bioPresent = bioRow
+      ? normalizeDayStatus(asString(bioRow.attendance)) === "Present"
+      : false;
+    const tivPresent = tivRow
+      ? normalizeDayStatus(asString(tivRow.attendance)) === "Present"
+      : false;
+    if (!bioPresent && !tivPresent) continue;
+
+    const inBio = punchMinutes(bioRow ? bioFirstPunch(bioRow) : null);
+    const inTiv = punchMinutes(tivRow ? tivazoFirstPunch(tivRow) : null);
+    const outBio = punchMinutes(bioRow ? bioCheckoutPunch(bioRow) : null);
+    const outTiv = punchMinutes(tivRow ? tivazoCheckoutPunch(tivRow) : null);
+
+    const ins = [inBio, inTiv].filter((value): value is number => value != null);
+    const outs = [outBio, outTiv].filter((value): value is number => value != null);
+    if (!ins.length || !outs.length) continue;
+
+    const seconds = workSpanSeconds(Math.min(...ins), Math.max(...outs));
+    if (seconds <= 0) continue;
+    total += seconds;
+    people += 1;
+  }
+  return averageWorkedHours(total, people);
+}
+
+/** Combined Avg Clock-in: earliest first punch per person across Bio ∪ Tivazo. */
+function combinedAvgClockIn(bio: JsonMap[], tivazo: JsonMap[]): string {
+  const bioMap = indexMembers(bio);
+  const tivMap = indexMembers(tivazo);
+  const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
+  const punches: number[] = [];
+  for (const key of keys) {
+    const bioRow = bioMap.get(key);
+    const tivRow = tivMap.get(key);
+    const inBio = punchMinutes(bioRow ? bioFirstPunch(bioRow) : null);
+    const inTiv = punchMinutes(tivRow ? tivazoFirstPunch(tivRow) : null);
+    if (inBio == null && inTiv == null) continue;
+    if (inBio != null && inTiv != null) punches.push(Math.min(inBio, inTiv));
+    else punches.push((inBio ?? inTiv) as number);
+  }
+  const avg = meanMinutes(punches);
+  return avg == null ? "—" : formatClockLabel(avg);
+}
+
 function recountTivazo(members: JsonMap[]): TivazoSummary {
   let present = 0;
   let absent = 0;
@@ -1591,10 +2519,17 @@ function recountTivazo(members: JsonMap[]): TivazoSummary {
   let idle = 0;
   let offline = 0;
   let tracked = 0;
+  let presentDays = 0;
   for (const row of members) {
-    if (asString(row.attendance).toLowerCase() === "present") {
+    const attendance = normalizeDayStatus(asString(row.attendance));
+    if (attendance === "Present") {
       present += 1;
-      tracked += asNumber(row.tracked_seconds);
+      const seconds = trackedSecondsOf(row.tracked_seconds) || trackedSecondsOf(row.tracked_label);
+      tracked += seconds;
+      const days = asNumber(row.present_days);
+      // Only count days that contribute tracked time so empty Present rows do not dilute salary averages.
+      if (days > 0) presentDays += days;
+      else if (seconds > 0) presentDays += 1;
     } else {
       absent += 1;
     }
@@ -1620,7 +2555,7 @@ function recountTivazo(members: JsonMap[]): TivazoSummary {
     offlineMembers: offline,
     presentMembers: present,
     absentMembers: absent,
-    avgWorkHours: averageHours(tracked, present),
+    avgWorkHours: averageWorkedHours(tracked, presentDays || (tracked > 0 ? present : 0)),
   };
 }
 
@@ -1670,52 +2605,12 @@ function bioLastPunch(member: JsonMap): { hour: number; minute: number } | null 
   return punchFromClock(asString(member.end_time)) || punchFromClock(asString(member.out_time));
 }
 
-function tivazoLiveStatus(member: JsonMap): string {
-  return (
-    asString(member.status) ||
-    asString(member.userStatus) ||
-    ""
-  ).toLowerCase();
+function tivazoCheckoutPunch(member: JsonMap): { hour: number; minute: number } | null {
+  return tivazoLastPunch(member);
 }
 
-function isTivazoStillOnShift(member: JsonMap, forToday: boolean): boolean {
-  if (!forToday) return false;
-  const status = tivazoLiveStatus(member);
-  return status === "active" || status === "tracking" || status === "idle";
-}
-
-const MIN_SHIFT_MINUTES = 3 * 60;
-const TODAY_CHECKOUT_AFTER = 12 * 60;
-
-function laterPunch(
-  start: { hour: number; minute: number } | null,
-  end: { hour: number; minute: number } | null,
-  forToday = false,
-): { hour: number; minute: number } | null {
-  if (!start || !end) return null;
-  const inMin = punchMinutes(start);
-  const outMin = punchMinutes(end);
-  if (inMin == null || outMin == null) return null;
-  let span = outMin - inMin;
-  if (span < 0) span += 1440;
-  if (span < MIN_SHIFT_MINUTES) return null;
-  if (forToday && outMin < TODAY_CHECKOUT_AFTER) return null;
-  return end;
-}
-
-function tivazoCheckoutPunch(
-  member: JsonMap,
-  forToday: boolean,
-): { hour: number; minute: number } | null {
-  if (isTivazoStillOnShift(member, forToday)) return null;
-  return laterPunch(tivazoFirstPunch(member), tivazoLastPunch(member), forToday);
-}
-
-function bioCheckoutPunch(
-  member: JsonMap,
-  forToday: boolean,
-): { hour: number; minute: number } | null {
-  return laterPunch(bioFirstPunch(member), bioLastPunch(member), forToday);
+function bioCheckoutPunch(member: JsonMap): { hour: number; minute: number } | null {
+  return bioLastPunch(member);
 }
 
 function punchMinutes(punch: { hour: number; minute: number } | null): number | null {
@@ -1802,18 +2697,19 @@ function buildPunchCompare(
     const tivRow = tivMap.get(key);
     const inBio = punchMinutes(bioRow ? bioFirstPunch(bioRow) : null);
     const inTiv = punchMinutes(tivRow ? tivazoFirstPunch(tivRow) : null);
-    const outBio = punchMinutes(bioRow ? bioCheckoutPunch(bioRow, forToday) : null);
-    const outTiv = punchMinutes(tivRow ? tivazoCheckoutPunch(tivRow, forToday) : null);
+    const outBio = punchMinutes(bioRow ? bioCheckoutPunch(bioRow) : null);
+    const outTiv = punchMinutes(tivRow ? tivazoCheckoutPunch(tivRow) : null);
 
-    if (inBio != null) {
-      bioIn.push(inBio);
+    if (inBio != null) bioIn.push(inBio);
+    if (inTiv != null) tivIn.push(inTiv);
+    if (inBio != null && inTiv != null) {
+      inCombined.push(Math.min(inBio, inTiv));
+      inGaps.push(inTiv - inBio);
+    } else if (inBio != null) {
       inCombined.push(inBio);
-    }
-    if (inTiv != null) {
-      tivIn.push(inTiv);
+    } else if (inTiv != null) {
       inCombined.push(inTiv);
     }
-    if (inBio != null && inTiv != null) inGaps.push(inTiv - inBio);
 
     if (outTiv != null) {
       tivOut.push(outTiv);
@@ -2013,11 +2909,15 @@ function formatClockLabel(totalMinutes: number): string {
 }
 
 function uniqueAttendance(bio: JsonMap[], tivazo: JsonMap[]): { people: number; present: number } {
+  const index = createIdentityIndex([
+    ...bio.map((row) => ({ email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "bio" as const })),
+    ...tivazo.map((row) => ({ email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "tivazo" as const })),
+  ]);
   const people = new Map<string, boolean>();
   for (const row of [...bio, ...tivazo]) {
-    const key = memberKey(row);
+    const key = identityCanonical(index, { email: asString(row.email), id: asString(row.id), name: asString(row.name) });
     if (!key) continue;
-    people.set(key, people.get(key) === true || asString(row.attendance).toLowerCase() === "present");
+    people.set(key, people.get(key) === true || isPresentAttendance(asString(row.attendance)));
   }
   let present = 0;
   for (const value of people.values()) if (value) present += 1;
@@ -2039,8 +2939,8 @@ function buildMemberFocus(
     sources: [...(bioRow ? ["Biometrics"] : []), ...(tiv ? ["Tivazo"] : [])],
     biometrics: {
       day: normalizeDayStatus(asString(bioRow?.attendance)),
-      inTime: formatClock(asString(bioRow?.start_time)),
-      outTime: formatClock(asString(bioRow?.end_time)),
+      inTime: attendanceIn(undefined, bioRow),
+      outTime: attendanceOut(undefined, bioRow),
       department: teamLabelFrom(asString(bioRow?.department)),
       designation: asString(bioRow?.designation),
       joined: asString(bioRow?.join_date),
@@ -2142,15 +3042,233 @@ function rosterPerson(
     groups: named.length ? named : groups,
     attendance: asString(raw.attendance),
     status: asString(raw.status),
-    startTime: asString(raw.start_time) || asString(raw.clocked_in),
-    endTime: asString(raw.end_time) || asString(raw.last_screenshot),
+    startTime: attendanceIn(undefined, raw) || memberClock(raw.clocked_in),
+    endTime: attendanceOut(undefined, raw) || memberClock(raw.last_screenshot),
     clockedIn: memberClock(raw.clocked_in),
     lastScreenshot: memberClock(raw.last_screenshot),
-    trackedSeconds: asNumber(raw.tracked_seconds),
+    trackedSeconds:
+      trackedSecondsOf(raw.tracked_seconds) || trackedSecondsOf(raw.tracked_label),
     trackedLabel: asString(raw.tracked_label),
+    presentDays: asNumber(raw.present_days) || undefined,
     designation: asString(raw.designation),
     joinDate: asString(raw.join_date),
   };
+}
+
+type PresenceBucket = {
+  present: number;
+  typicalIn: number | null;
+  typicalOut: number | null;
+};
+
+function medianClock(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+function addPresencePunch(
+  map: Map<string, { present: number; ins: number[]; outs: number[] }>,
+  day: string,
+  punched: boolean,
+  inMinutes: number | null,
+  outMinutes: number | null,
+) {
+  if (!day || !punched) return;
+  const row = map.get(day) ?? { present: 0, ins: [], outs: [] };
+  row.present += 1;
+  if (inMinutes != null) row.ins.push(inMinutes);
+  if (outMinutes != null) row.outs.push(outMinutes);
+  map.set(day, row);
+}
+
+function finishPresence(map: Map<string, { present: number; ins: number[]; outs: number[] }>): Map<string, PresenceBucket> {
+  return new Map(
+    [...map.entries()].map(([day, row]) => [
+      day,
+      {
+        present: row.present,
+        typicalIn: medianClock(row.ins),
+        typicalOut: medianClock(row.outs),
+      },
+    ]),
+  );
+}
+
+function presenceFromBioEmployees(employees: JsonMap[], start: string, end: string): Map<string, PresenceBucket> {
+  const map = new Map<string, { present: number; ins: number[]; outs: number[] }>();
+  for (const employee of employees) {
+    const recs = attendancesOf(employee);
+    if (!recs.length) continue;
+    for (const rec of recs) {
+      const day = asString(rec.date);
+      if (!day || day < start || day > end) continue;
+      const inLabel = attendanceIn(rec, employee);
+      const outLabel = attendanceOut(rec, employee);
+      const status = normalizeDayStatus(asString(rec.status) || asString(employee.attendance));
+      const punched = status === "Present";
+      addPresencePunch(map, day, punched, clockLabelMinutes(inLabel), clockLabelMinutes(outLabel));
+    }
+  }
+  return finishPresence(map);
+}
+
+function presenceFromTivazoActivities(acts: JsonMap[], start: string, end: string): Map<string, PresenceBucket> {
+  const map = new Map<string, { present: number; ins: number[]; outs: number[] }>();
+  for (const act of acts) {
+    const day = asString(act.date);
+    if (!day || day < start || day > end) continue;
+    const tracked = asNumber(act.trackedTime);
+    const clocked = asNumber(act.clocked_in);
+    const screenshot = asNumber(act.last_taken_screenshot);
+    const status = normalizeDayStatus(asString(act.status) || asString(act.attendance));
+    const punched =
+      status === "Present" ||
+      (!status && (tracked > 0 || clocked > 0));
+    addPresencePunch(
+      map,
+      day,
+      punched,
+      clocked ? clockLabelMinutes(clockLabel(clocked)) : null,
+      screenshot ? clockLabelMinutes(clockLabel(screenshot)) : null,
+    );
+  }
+  return finishPresence(map);
+}
+
+function presenceFromLiveMembers(members: JsonMap[], day: string, source: "bio" | "tivazo"): Map<string, PresenceBucket> {
+  const map = new Map<string, { present: number; ins: number[]; outs: number[] }>();
+  for (const member of members) {
+    if (source === "bio") {
+      const inLabel = attendanceIn(undefined, member);
+      const status = normalizeDayStatus(asString(member.attendance));
+      const punched = status === "Present";
+      addPresencePunch(map, day, punched, clockLabelMinutes(inLabel), clockLabelMinutes(attendanceOut(undefined, member)));
+      continue;
+    }
+    const clocked = asNumber(member.clocked_in);
+    const tracked = asNumber(member.tracked_seconds) || parseTrackedLabel(asString(member.tracked_label));
+    const punched = normalizeDayStatus(asString(member.attendance)) === "Present";
+    addPresencePunch(
+      map,
+      day,
+      punched,
+      clocked ? clockLabelMinutes(clockLabel(clocked)) : clockLabelMinutes(memberClock(member.clocked_in)),
+      clockLabelMinutes(memberClock(member.last_screenshot)),
+    );
+  }
+  return finishPresence(map);
+}
+
+function mergePresence(base: Map<string, PresenceBucket>, extra: Map<string, PresenceBucket>) {
+  for (const [day, row] of extra) {
+    const prev = base.get(day);
+    if (!prev || row.present > prev.present) base.set(day, row);
+  }
+}
+
+function storedToPresence(
+  logs: Map<string, { present: number; typicalIn: number | null; typicalOut: number | null }>,
+  ingest: Map<string, { presentCount: number }>,
+): Map<string, PresenceBucket> {
+  const map = new Map<string, PresenceBucket>();
+  for (const [day, row] of logs) {
+    map.set(day, {
+      present: row.present,
+      typicalIn: row.typicalIn,
+      typicalOut: row.typicalOut,
+    });
+  }
+  for (const [day, row] of ingest) {
+    const prev = map.get(day);
+    const present = Math.max(prev?.present || 0, Number(row.presentCount) || 0);
+    if (!present) continue;
+    map.set(day, {
+      present,
+      typicalIn: prev?.typicalIn ?? null,
+      typicalOut: prev?.typicalOut ?? null,
+    });
+  }
+  return map;
+}
+
+async function dashboardPresence(url: URL): Promise<{
+  start: string;
+  end: string;
+  days: { day: string; present: number; typicalIn: number | null; typicalOut: number | null }[];
+}> {
+  const { start, end } = dateRange(url);
+  const source = readParam(url, "source");
+  const teamId = readParam(url, "teamId", "group", "department");
+  assertTeamAccess(teamId);
+  const today = todayInAppZone();
+  // bio | tivazo | all/combined (default). Combined uses both sources and max(count)
+  // as a salary-safe lower bound of unique Present (exact union needs per-person join).
+  const wantBio = source !== "tivazo";
+  const wantTivazo = source !== "bio";
+  const [bioLogs, tivazoLogs, bioIngest, tivazoIngest] = await Promise.all([
+    wantBio ? presenceByDay("biometrics", start, end, teamId).catch(() => new Map()) : Promise.resolve(new Map()),
+    wantTivazo ? presenceByDay("tivazo", start, end, teamId).catch(() => new Map()) : Promise.resolve(new Map()),
+    wantBio ? ingestedDays("biometrics", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
+    wantTivazo ? ingestedDays("tivazo", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
+  ]);
+  const bio = storedToPresence(bioLogs, bioIngest);
+  const tivazo = storedToPresence(tivazoLogs, tivazoIngest);
+  const span = enumerateDays(start, end).length;
+  const storedHits = enumerateDays(start, end).filter((day) =>
+    Math.max(bio.get(day)?.present || 0, tivazo.get(day)?.present || 0) > 0,
+  ).length;
+  const sparse = span > 7 && storedHits <= Math.max(1, Math.floor(span * 0.08));
+
+  if (sparse) {
+    const [bioEmployees, tivazoActs] = await Promise.all([
+      wantBio ? loadBioEmployeesRange(start, end).catch(() => [] as JsonMap[]) : Promise.resolve([] as JsonMap[]),
+      wantTivazo ? loadTivazoActivitiesRange(start, end).catch(() => [] as JsonMap[]) : Promise.resolve([] as JsonMap[]),
+    ]);
+    if (wantBio) mergePresence(bio, presenceFromBioEmployees(bioEmployees, start, end));
+    if (wantTivazo) mergePresence(tivazo, presenceFromTivazoActivities(tivazoActs, start, end));
+  } else {
+    void Promise.all([
+      wantBio ? ensureStoredRange("biometrics", start, end) : Promise.resolve(false),
+      wantTivazo ? ensureStoredRange("tivazo", start, end) : Promise.resolve(false),
+    ]).catch(() => undefined);
+  }
+
+  if (end >= today) {
+    const [bioLiveMembers, tivazoLive] = await Promise.all([
+      wantBio ? cachedBioLive(today, today).catch(() => [] as JsonMap[]) : Promise.resolve([] as JsonMap[]),
+      wantTivazo ? cachedTivazoLive(today, today).catch(() => ({ members: [] as JsonMap[], groups: [] as JsonMap[] })) : Promise.resolve({ members: [] as JsonMap[], groups: [] as JsonMap[] }),
+    ]);
+    if (wantBio) mergePresence(bio, presenceFromLiveMembers(bioLiveMembers, today, "bio"));
+    if (wantTivazo) mergePresence(tivazo, presenceFromLiveMembers(tivazoLive.members, today, "tivazo"));
+  }
+
+  const days = enumerateDays(start, end).map((day) => {
+    const bioRow = bio.get(day);
+    const tivazoRow = tivazo.get(day);
+    const bioCount = bioRow?.present || 0;
+    const tivazoCount = tivazoRow?.present || 0;
+    const present =
+      source === "tivazo"
+        ? tivazoCount
+        : source === "bio"
+          ? bioCount
+          : Math.max(bioCount, tivazoCount);
+    const typical =
+      source === "tivazo"
+        ? tivazoRow
+        : source === "bio"
+          ? bioRow
+          : (bioCount >= tivazoCount ? bioRow : tivazoRow);
+    return {
+      day,
+      present,
+      typicalIn: typical?.typicalIn ?? null,
+      typicalOut: typical?.typicalOut ?? null,
+    };
+  });
+  return { start, end, days };
 }
 
 async function dashboardTrend(url: URL, signal?: AbortSignal): Promise<{ trend: TrendPoint[] }> {
@@ -2158,14 +3276,15 @@ async function dashboardTrend(url: URL, signal?: AbortSignal): Promise<{ trend: 
   const memberId = readParam(url, "memberId");
   assertTeamAccess(teamId);
   const today = todayInAppZone();
-  const trendWindow = rollingWindow(today, TREND_DAYS);
+  const { start: rangeStart, end: rangeEnd } = dateRange(url);
+  const trendWindow = resolveTrendWindow(rangeStart, rangeEnd, today);
   const tivazoTeams = restrictTeamOptions(namedTeamOptions(groupCatalog()), "tivazo");
-  const assignedTivazo = (leadAssignments() ?? []).filter((item) => item.source === "tivazo");
+  const assignedTivazoTeams = (leadAssignments() ?? []).filter((item) => item.source === "tivazo");
   const trendGroups = (
     teamId
       ? [resolveTrendGroup(teamId, tivazoTeams)]
       : isTeamLead()
-        ? assignedTivazo.map(
+        ? assignedTivazoTeams.map(
             (item) =>
               resolveTrendGroup(item.teamId, tivazoTeams) ||
               resolveTrendGroup(item.teamLabel, tivazoTeams),
@@ -2188,7 +3307,59 @@ async function dashboardTrend(url: URL, signal?: AbortSignal): Promise<{ trend: 
   };
 }
 
+function parseTrackedLabel(label: string): number {
+  const parts = label.split(":").map(Number);
+  if (parts.length < 2 || parts.some((value) => !Number.isFinite(value))) return 0;
+  return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+}
+
+function trendMapFromLogs(logs: DailyLogRow[]): Map<string, { clockIns: number; tracked: number }> {
+  const map = new Map<string, { clockIns: number; tracked: number }>();
+  for (const row of logs) {
+    if (!row.date) continue;
+    const prev = map.get(row.date) ?? { clockIns: 0, tracked: 0 };
+    if (row.status === "Present") prev.clockIns += 1;
+    prev.tracked += parseTrackedLabel(row.trackedTime);
+    map.set(row.date, prev);
+  }
+  return map;
+}
+
+function filtersFromStoredLogs(bioLogs: DailyLogRow[], tivazoLogs: DailyLogRow[]): FilterOptions {
+  const teams = new Map<string, FilterOption>();
+  const roles = new Map<string, FilterOption>();
+  const supervisors = new Map<string, FilterOption>();
+  for (const row of bioLogs) {
+    const id = teamIdFrom(row.group);
+    const label = teamLabelFrom(row.group);
+    teams.set(id.toLowerCase(), { id, label });
+    if (row.role.trim()) roles.set(row.role.toLowerCase(), { id: row.role, label: row.role });
+  }
+  for (const row of tivazoLogs) {
+    const names = row.groups.length ? row.groups : row.group ? [row.group] : [];
+    for (const group of names) {
+      const label = group.trim();
+      if (!label) continue;
+      supervisors.set(label.toLowerCase(), { id: label, label });
+    }
+  }
+  return {
+    teams: [...teams.values()].sort((left, right) => left.label.localeCompare(right.label)),
+    supervisors: [...supervisors.values()].sort((left, right) => left.label.localeCompare(right.label)),
+    roles: [...roles.values()].sort((left, right) => left.label.localeCompare(right.label)),
+    members: [],
+  };
+}
+
 async function dashboardOverview(url: URL, signal?: AbortSignal): Promise<DashboardOverview> {
+  const { start, end } = dateRange(url);
+  schedulePresetWarm();
+  return overviewCache.get(`${start}:${end}:${scopeCacheKey()}`, () =>
+    buildDashboardOverview(url, signal),
+  );
+}
+
+async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<DashboardOverview> {
   const metric = (readParam(url, "metric") || "present") as TrendMetric;
   const teamId = readParam(url, "teamId", "group", "department");
   assertTeamAccess(teamId);
@@ -2199,19 +3370,91 @@ async function dashboardOverview(url: URL, signal?: AbortSignal): Promise<Dashbo
   liveUrl.searchParams.delete("memberId");
   liveUrl.searchParams.delete("q");
   const today = todayInAppZone();
-  const trendWindow = rollingWindow(today, TREND_DAYS);
+  const { start, end } = dateRange(url);
+  const trendWindow = resolveTrendWindow(start, end, today);
+  const assignedOverviewTeams = (leadAssignments() ?? []).filter((item) => item.source === "tivazo");
+  const tivazoTeamsHint = restrictTeamOptions(namedTeamOptions(groupCatalog()), "tivazo");
+  const trendGroups = (
+    isTeamLead()
+      ? assignedOverviewTeams.map(
+          (item) =>
+            resolveTrendGroup(item.teamId, tivazoTeamsHint) ||
+            resolveTrendGroup(item.teamLabel, tivazoTeamsHint),
+        )
+      : []
+  ).filter((value): value is string => Boolean(value));
+  const uniqueTrendGroups = [...new Set(trendGroups)];
+  const trendTask =
+    isTeamLead() && uniqueTrendGroups.length === 0
+      ? Promise.resolve(new Map<string, { clockIns: number; tracked: number }>())
+      : loadTrendSeries(uniqueTrendGroups, "", today, signal);
 
-  const [bioFilters, tivMembers, bioMembers] = await Promise.all([
-    settled(filters(url, signal)),
-    settled(tivazoLive(liveUrl, signal, true)),
-    settled(bioLive(liveUrl, signal, true)),
+  const useHistory = start !== end;
+  const storedHistory = useHistory
+    ? await Promise.all([
+        rangeIsStored("biometrics", start, end, today).catch(() => false),
+        rangeIsStored("tivazo", start, end, today).catch(() => false),
+      ])
+    : ([false, false] as const);
+  const bioStored = storedHistory[0];
+  const tivazoStored = storedHistory[1];
+  const todayUrl = withDayRange(liveUrl, today, today);
+  const todayKey = `${today}:${today}`;
+  const peekedBio = bioLiveCache.peek(todayKey) ?? [];
+  const peekedTivazo = tivazoLiveCache.peek(todayKey);
+  void cachedBioLive(today, today).catch(() => undefined);
+  void cachedTivazoLive(today, today).catch(() => undefined);
+
+  const skipLiveWait = useHistory && (bioStored || tivazoStored);
+  const [bioFilters, tivMembers, bioMembers, byDay, historyBio, historyActs, storedBioLogs, storedTivazoLogs] =
+    await Promise.all([
+    skipLiveWait
+      ? Promise.resolve({ ok: false as const, error: undefined })
+      : settled(filters(url, signal)),
+    skipLiveWait
+      ? Promise.resolve({
+          ok: true as const,
+          value: { members: peekedTivazo?.members ?? [], groups: peekedTivazo?.groups ?? [] },
+        })
+      : settled(tivazoLive(todayUrl, signal, true)),
+    skipLiveWait
+      ? Promise.resolve({ ok: true as const, value: { members: peekedBio } })
+      : settled(bioLive(todayUrl, signal, true)),
+    skipLiveWait
+      ? Promise.resolve(new Map<string, { clockIns: number; tracked: number }>())
+      : trendTask,
+    useHistory && !bioStored ? settled(loadBioEmployeesRange(start, end)) : Promise.resolve({ ok: false as const, error: undefined }),
+    useHistory && !tivazoStored
+      ? settled(loadTivazoActivitiesRange(start, end))
+      : Promise.resolve({ ok: false as const, error: undefined }),
+    bioStored ? listHistoryLogs("biometrics", start, end, today).catch(() => [] as DailyLogRow[]) : Promise.resolve([] as DailyLogRow[]),
+    tivazoStored ? listHistoryLogs("tivazo", start, end, today).catch(() => [] as DailyLogRow[]) : Promise.resolve([] as DailyLogRow[]),
   ]);
 
-  const filterOptions: FilterOptions = bioFilters.ok
-    ? bioFilters.value
-    : { teams: [], supervisors: [], roles: [], members: [] };
-  const rawTivazo = tivMembers.ok ? tivMembers.value.members : [];
-  const rawBio = bioMembers.ok ? bioMembers.value.members : [];
+  const filterOptions: FilterOptions = skipLiveWait
+    ? filtersFromStoredLogs(storedBioLogs, storedTivazoLogs)
+    : bioFilters.ok
+      ? bioFilters.value
+      : { teams: [], supervisors: [], roles: [], members: [] };
+  const trendByDay = skipLiveWait ? trendMapFromLogs(storedTivazoLogs) : byDay;
+  let liveTivazo = tivMembers.ok ? tivMembers.value.members : [];
+  let liveBio = bioMembers.ok ? bioMembers.value.members : [];
+  let rawTivazo = liveTivazo;
+  let rawBio = liveBio;
+  if (bioStored && storedBioLogs.length) {
+    rawBio = employeesToRangeMembers(logsToBioMembers(storedBioLogs), start, end);
+    if (end >= today) rawBio = overlayLiveMembers(rawBio, liveBio);
+  } else if (useHistory && historyBio.ok && historyBio.value.length) {
+    rawBio = employeesToRangeMembers(historyBio.value, start, end);
+    if (end >= today) rawBio = overlayLiveMembers(rawBio, liveBio);
+  }
+  if (tivazoStored) {
+    rawTivazo = logsToTivazoMembers(storedTivazoLogs, liveTivazo);
+    if (end >= today) rawTivazo = overlayLiveMembers(rawTivazo, liveTivazo);
+  } else if (useHistory && historyActs.ok) {
+    rawTivazo = activitiesToRangeMembers(historyActs.value, liveTivazo, start, end);
+    if (end >= today) rawTivazo = overlayLiveMembers(rawTivazo, liveTivazo);
+  }
   const tivazoTeams = filterOptions.supervisors;
   const bioTeams = filterOptions.teams;
   const catalog = groupNameMap([
@@ -2229,25 +3472,9 @@ async function dashboardOverview(url: URL, signal?: AbortSignal): Promise<Dashbo
   const tivazo = recountTivazo(visibleTivazo);
   const memberOptions = mergeMemberOptions(joined.bio, joined.tivazo);
   const unique = uniqueAttendance(visibleBio, visibleTivazo);
-
-  const assignedTivazo = (leadAssignments() ?? []).filter((item) => item.source === "tivazo");
-  const trendGroups = (
-    isTeamLead()
-      ? assignedTivazo.map(
-          (item) =>
-            resolveTrendGroup(item.teamId, tivazoTeams) ||
-            resolveTrendGroup(item.teamLabel, tivazoTeams),
-        )
-      : []
-  ).filter((value): value is string => Boolean(value));
-  const uniqueTrendGroups = [...new Set(trendGroups)];
-  const byDay =
-    isTeamLead() && uniqueTrendGroups.length === 0
-      ? new Map<string, { clockIns: number; tracked: number }>()
-      : await loadTrendSeries(uniqueTrendGroups, "", today, signal);
   const days = enumerateDays(trendWindow.start, trendWindow.end);
   const trend: TrendPoint[] = days.map((day) => {
-    const point = byDay.get(day);
+    const point = trendByDay.get(day);
     const present = point?.clockIns ?? 0;
     const tracked = point?.tracked ?? 0;
     return { day, value: present, clockIns: present, trackedSeconds: tracked };
@@ -2260,12 +3487,15 @@ async function dashboardOverview(url: URL, signal?: AbortSignal): Promise<Dashbo
     utilization: buildLeaderboard(visibleTivazo, "utilization", catalog),
   };
 
-  const { start, end } = dateRange(url);
   const punchDay = end || start || today;
+  const liveScopedBio = filterMembersForLead(liveBio, "biometrics");
+  const liveScopedTivazo = filterMembersForLead(liveTivazo, "tivazo");
+  const punchBio = punchDay === today ? liveScopedBio : visibleBio;
+  const punchTivazo = punchDay === today ? liveScopedTivazo : visibleTivazo;
   const hourly = {
-    biometrics: buildHourlySeries(visibleBio, bioFirstPunch),
-    tivazo: buildHourlySeries(visibleTivazo, tivazoFirstPunch),
-    compare: buildPunchCompare(visibleBio, visibleTivazo, punchDay === today),
+    biometrics: buildHourlySeries(punchBio, bioFirstPunch),
+    tivazo: buildHourlySeries(punchTivazo, tivazoFirstPunch),
+    compare: buildPunchCompare(punchBio, punchTivazo, punchDay === today),
   };
 
   return {
@@ -2276,12 +3506,20 @@ async function dashboardOverview(url: URL, signal?: AbortSignal): Promise<Dashbo
       tivazoTeams: tivazoTeams.length,
       biomaticMembers: biomatic.totalMembers,
       tivazoMembers: tivazo.totalMembers,
-      avgWorkHours: tivazo.avgWorkHours,
-      avgClockIn: hourly.compare.checkIn.overall.time !== "—"
-        ? hourly.compare.checkIn.overall.time
-        : hourly.biometrics.avgClockIn,
       avgAttendance: percent(unique.present, unique.people),
+      avgWorkHours: combinedWorkHours(visibleBio, visibleTivazo),
+      avgClockIn: combinedAvgClockIn(punchBio, punchTivazo),
       biomaticPresent: biomatic.presentMembers,
+      bioPresent: biomatic.presentMembers,
+      bioTotal: biomatic.totalMembers,
+      tivazoPresent: tivazo.presentMembers,
+      tivazoTotal: tivazo.totalMembers,
+      bioAttendance: percent(biomatic.presentMembers, biomatic.totalMembers),
+      tivazoAttendance: percent(tivazo.presentMembers, tivazo.totalMembers),
+      bioAvgWorkHours: averageBioDoorFromMembers(visibleBio),
+      tivazoAvgWorkHours: tivazo.avgWorkHours,
+      bioClockIn: hourly.compare.checkIn.first.time,
+      tivazoClockIn: hourly.compare.checkIn.second.time,
     },
     filters: {
       teams: mergedTeams,

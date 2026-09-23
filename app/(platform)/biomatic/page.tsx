@@ -65,6 +65,7 @@ export default function BiomaticPage() {
   const [query, setQuery] = useState("");
   const [memberId, setMemberId] = useState("");
   const [emailScope, setEmailScope] = useState<string[]>([]);
+  const [idScope, setIdScope] = useState<string[]>([]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -75,11 +76,16 @@ export default function BiomaticPage() {
       .split(",")
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean);
+    const ids = (params.get("ids") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
     const start = params.get("startDate") || "";
     const end = params.get("endDate") || "";
     if (team) setTeamId(team);
     if (member) setMemberId(member);
     if (emails.length) setEmailScope(emails);
+    if (ids.length) setIdScope(ids);
     if (start) setStartDate(start);
     if (end) setEndDate(end);
     if (view === "members") {
@@ -89,6 +95,11 @@ export default function BiomaticPage() {
     }
     if (view === "teams") {
       setTab("teams");
+      setDayStatus("");
+      return;
+    }
+    if (view === "logs") {
+      setTab("logs");
       setDayStatus("");
       return;
     }
@@ -128,21 +139,22 @@ export default function BiomaticPage() {
   }, [filters.data?.teams, filteredTeams]);
   const filterRoles = filters.data?.roles ?? [];
   const peopleScope = useMemo(
-    () => ({ memberId, emails: emailScope }),
-    [memberId, emailScope],
+    () => ({ memberId, emails: emailScope, ids: idScope }),
+    [memberId, emailScope, idScope],
   );
+  const pinnedPeople = Boolean(idScope.length || (!memberId && emailScope.length));
   const scopedMembers = useMemo(
     () =>
       filterBioMembers(membersAll.data?.items ?? [], teamId, roleId, query, "", filterTeams, peopleScope),
     [membersAll.data?.items, teamId, roleId, query, filterTeams, peopleScope],
   );
-  const memberRows = useMemo(
-    () =>
-      tab === "logs" || !dayStatus
-        ? scopedMembers
-        : filterBioMembers(scopedMembers, "", "", "", dayStatus, [], peopleScope),
-    [scopedMembers, tab, dayStatus, peopleScope],
-  );
+  const memberRows = useMemo(() => {
+    if (tab === "logs") return scopedMembers;
+    // Chart click pins the exact Present set — show that list as-is so counts match hover.
+    if (pinnedPeople) return scopedMembers;
+    if (!dayStatus) return scopedMembers;
+    return filterBioMembers(scopedMembers, "", "", "", dayStatus, [], peopleScope);
+  }, [scopedMembers, tab, dayStatus, peopleScope, pinnedPeople]);
   const summary = useMemo(() => summaryFromBioMembers(scopedMembers), [scopedMembers]);
   const logRows = useMemo(
     () =>
@@ -182,6 +194,8 @@ export default function BiomaticPage() {
           : "No attendance rows match these filters.";
 
   const applyCard = (next: BiomaticCardId) => {
+    setIdScope([]);
+    setEmailScope([]);
     if (selectedCard === next) {
       if (next === "presentMembers" || next === "leaveMembers" || next === "absentMembers") {
         setDayStatus("");
@@ -254,7 +268,7 @@ export default function BiomaticPage() {
               ? { label: "Departments", value: String(filteredTeams.length) }
               : tab === "members"
                 ? {
-                    label: "Members",
+                    label: pinnedPeople ? "People" : "Members",
                     value: String(memberRows.length || "—"),
                   }
                 : {
@@ -279,7 +293,11 @@ export default function BiomaticPage() {
               allLabel="All departments"
               options={filterTeams}
               searchable
-              onChange={setTeamId}
+              onChange={(next) => {
+                setTeamId(next);
+                setIdScope([]);
+                setEmailScope([]);
+              }}
             />
             <FilterSelect
               label="Role"
@@ -299,7 +317,11 @@ export default function BiomaticPage() {
                   { id: "Absent", label: "Absent" },
                   { id: "Leave", label: "Leave" },
                 ]}
-                onChange={setDayStatus}
+                onChange={(next) => {
+                  setDayStatus(next);
+                  setIdScope([]);
+                  setEmailScope([]);
+                }}
               />
             ) : null}
             <FilterSearch

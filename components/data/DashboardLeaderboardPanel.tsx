@@ -3,6 +3,7 @@
 import { dashboardMetricInfo } from "@/components/data/dashboard-metrics";
 import { RankMemberRow, DashboardRankingModal } from "@/components/data/DashboardRankingModal";
 import type { Leaderboard, TrendMetric } from "@/lib/api";
+import { emailsParam, tivazoHref } from "@/lib/href";
 import { useState } from "react";
 
 type RankView = "leaders" | "attention";
@@ -15,12 +16,16 @@ export function DashboardLeaderboardPanel({
   metric,
   teamLabel,
   dateRangeLabel,
+  startDate,
+  endDate,
 }: {
   board: Leaderboard | null;
   loading: boolean;
   metric: TrendMetric;
   teamLabel: string;
   dateRangeLabel: string;
+  startDate?: string;
+  endDate?: string;
 }) {
   const [view, setView] = useState<RankView>("leaders");
   const [open, setOpen] = useState(false);
@@ -31,6 +36,13 @@ export function DashboardLeaderboardPanel({
   const attentionPreview = attention.slice(0, PREVIEW);
   const rows = view === "leaders" ? leaders : attention;
   const leftover = Math.max(0, rows.length - PREVIEW);
+  const memberHref = (id: string, email: string) =>
+    tivazoHref({
+      memberId: id,
+      emails: emailsParam([email]),
+      startDate,
+      endDate,
+    });
 
   return (
     <section className="smp-panel smp-dashboard-panel" aria-label="Performance ranking">
@@ -104,6 +116,7 @@ export function DashboardLeaderboardPanel({
                     delta={row.delta}
                     positive={row.positive}
                     status={metric === "present" ? row.status : undefined}
+                    href={memberHref(row.id, row.email)}
                   />
                 ))}
               </ul>
@@ -135,6 +148,7 @@ export function DashboardLeaderboardPanel({
                     value={item.value}
                     status={item.status}
                     reason={item.reason}
+                    href={memberHref(item.id, item.email)}
                   />
                 ))}
               </ul>
@@ -151,6 +165,7 @@ export function DashboardLeaderboardPanel({
         attention={attention}
         view={view}
         showStatus={metric === "present"}
+        memberHref={memberHref}
         onClose={() => setOpen(false)}
       />
     </section>
