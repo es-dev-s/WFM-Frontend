@@ -1,7 +1,5 @@
 "use client";
 
-import { FilterSearch } from "@/components/ui/FilterSearch";
-import { FilterSelect } from "@/components/ui/FilterSelect";
 import { DashboardClockInsHeatmap } from "@/components/data/DashboardClockInsHeatmap";
 import { DashboardClockInsModal } from "@/components/data/DashboardClockInsModal";
 import { DashboardPeopleModal, type PeopleModalSpec } from "@/components/data/DashboardPeopleModal";
@@ -16,6 +14,8 @@ import { isoDateInZone } from "@/lib/datetime";
 import { biomaticHref, peopleScopeParam, tivazoHref } from "@/lib/href";
 import {
   LATE_AFTER_MIN,
+  type ArrivalStatus,
+  type DepartureStatus,
   type WorkdayPerson,
   dailyLogToRoster,
   formatMinutes,
@@ -92,6 +92,25 @@ type DayModalState = {
   fetch: boolean;
 };
 
+
+function arrivalOn(
+  person: WorkdayPerson,
+  source: "all" | "bio" | "tivazo",
+): ArrivalStatus {
+  if (source === "bio") return person.bioArrival;
+  if (source === "tivazo") return person.tivazoArrival;
+  return person.arrival;
+}
+
+function departureOn(
+  person: WorkdayPerson,
+  source: "all" | "bio" | "tivazo",
+): DepartureStatus {
+  if (source === "bio") return person.bioDeparture;
+  if (source === "tivazo") return person.tivazoDeparture;
+  return person.departure;
+}
+
 export function DashboardClockIns({
   bio,
   tivazo,
@@ -104,7 +123,7 @@ export function DashboardClockIns({
   startDate,
   endDate,
   source = "all",
-  onSourceChange,
+  onSourceChange: _onSourceChange,
   onDaySelect: _onDaySelect,
 }: {
   bio: DashboardRosterPerson[];
@@ -123,14 +142,16 @@ export function DashboardClockIns({
   onDaySelect?: (day: string) => void;
 }) {
   void _onDaySelect; // retained for callers; Presence day open is modal-only
-  const [personId, setPersonId] = useState(memberId);
-  const [personQuery, setPersonQuery] = useState("");
+  void _onSourceChange; // Source UI lives in top dashboard filter strip
   const [peopleSpec, setPeopleSpec] = useState<PeopleModalSpec | null>(null);
   const [dayModal, setDayModal] = useState<DayModalState | null>(null);
 
+  // Drop open chip/day dialogs when filters change so lists cannot stay office-wide.
   useEffect(() => {
-    setPersonId(memberId);
-  }, [memberId]);
+    setPeopleSpec(null);
+    setDayModal(null);
+  }, [teamId, memberId, source, startDate, endDate, day, period]);
+
 
   const todayIso = typeof today === "string" && today ? today : isoDateInZone();
 
@@ -147,74 +168,59 @@ export function DashboardClockIns({
   const singleDay = Boolean(
     startDate && endDate && dayKey(startDate) === dayKey(endDate),
   );
-  const singleMember = Boolean((personId || memberId).trim());
-  const personOptions = useMemo(
-    () =>
-      people
-        .map((person) => ({
-          id: person.email || person.id,
-          label: person.name,
-        }))
-        .filter((option, index, list) => list.findIndex((item) => item.id === option.id) === index),
-    [people],
-  );
+  const singleMember = Boolean(memberId.trim());
   const visible = useMemo(() => {
-    if (personId) {
-      const key = personId.trim().toLowerCase();
-      return people.filter(
-        (person) =>
-          person.email.toLowerCase() === key ||
-          person.id.toLowerCase() === key ||
-          person.name.toLowerCase() === key,
-      );
-    }
-    const needle = personQuery.trim().toLowerCase();
-    if (!needle) return people;
+    const key = memberId.trim().toLowerCase();
+    if (!key) return people;
     return people.filter(
       (person) =>
-        person.name.toLowerCase().includes(needle) ||
-        person.email.toLowerCase().includes(needle) ||
-        person.team.toLowerCase().includes(needle),
+        person.email.toLowerCase() === key ||
+        person.id.toLowerCase() === key ||
+        person.name.toLowerCase() === key,
     );
-  }, [people, personId, personQuery]);
-  const present = useMemo(() => {
-    const rows = visible.filter((person) => workdayPresentOn(person, source));
-    // Range views can expand to person-days; Present cards count unique people.
-    return period === "range" ? uniqueWorkdayPeople(rows) : rows;
-  }, [visible, source, period]);
-  const absent = useMemo(() => {
-    const rows = visible.filter((person) => !workdayPresentOn(person, source));
-    return period === "range" ? uniqueWorkdayPeople(rows) : rows;
-  }, [visible, source, period]);
-  const onTime = useMemo(() => {
-    const rows = visible.filter(
-      (person) => workdayPresentOn(person, source) && person.arrival === "on-time",
-    );
-    return period === "range" ? uniqueWorkdayPeople(rows) : rows;
-  }, [visible, source, period]);
-  const late = useMemo(() => {
-    const rows = visible.filter(
-      (person) => workdayPresentOn(person, source) && person.arrival === "late",
-    );
-    return period === "range" ? uniqueWorkdayPeople(rows) : rows;
-  }, [visible, source, period]);
-  const early = useMemo(() => {
-    const rows = visible.filter(
-      (person) => workdayPresentOn(person, source) && person.departure === "early",
-    );
-    return period === "range" ? uniqueWorkdayPeople(rows) : rows;
-  }, [visible, source, period]);
-  const fullDay = useMemo(() => {
-    const rows = visible.filter(
-      (person) =>
-        workdayPresentOn(person, source) &&
-        person.arrival === "on-time" &&
-        person.departure === "on-time",
-    );
-    return period === "range" ? uniqueWorkdayPeople(rows) : rows;
-  }, [visible, source, period]);
+  }, [people, memberId]);
+  // Multi-day range: counts are person-days (events). Today/single-day: people that day.
+  const present = useMemo(
+    () => visible.filter((person) => workdayPresentOn(person, source)),
+    [visible, source],
+  );
+  const absent = useMemo(
+    () => visible.filter((person) => !workdayPresentOn(person, source)),
+    [visible, source],
+  );
+  const onTime = useMemo(
+    () =>
+      visible.filter(
+        (person) => workdayPresentOn(person, source) && arrivalOn(person, source) === "on-time",
+      ),
+    [visible, source],
+  );
+  const late = useMemo(
+    () =>
+      visible.filter(
+        (person) => workdayPresentOn(person, source) && arrivalOn(person, source) === "late",
+      ),
+    [visible, source],
+  );
+  const early = useMemo(
+    () =>
+      visible.filter(
+        (person) => workdayPresentOn(person, source) && departureOn(person, source) === "early",
+      ),
+    [visible, source],
+  );
+  const fullDay = useMemo(
+    () =>
+      visible.filter(
+        (person) =>
+          workdayPresentOn(person, source) &&
+          arrivalOn(person, source) === "on-time" &&
+          departureOn(person, source) === "on-time",
+      ),
+    [visible, source],
+  );
   const spotlight = useMemo(() => {
-    if (!personId || visible.length === 0) return null;
+    if (!memberId.trim() || visible.length === 0) return null;
     if (visible.length === 1) return visible[0];
     const ins = visible.map((person) => person.inMinutes).filter((value): value is number => value != null);
     const outs = visible.map((person) => person.outMinutes).filter((value): value is number => value != null);
@@ -240,11 +246,11 @@ export function DashboardClockIns({
       bioPresent: visible.some((person) => person.bioPresent),
       tivazoPresent: visible.some((person) => person.tivazoPresent),
     } satisfies WorkdayPerson;
-  }, [personId, visible]);
+  }, [memberId, visible]);
 
   const range = {
     teamId: teamId || undefined,
-    memberId: personId || memberId || undefined,
+    memberId: memberId || undefined,
     startDate: startDate || day,
     endDate: endDate || day,
   };
@@ -261,25 +267,48 @@ export function DashboardClockIns({
     if (source === "tivazo") return tivazoHref(next);
     return biomaticHref(next);
   };
+  const pickRosterMatch = (
+    pool: DashboardRosterPerson[],
+    person: WorkdayPerson,
+  ): DashboardRosterPerson | undefined => {
+    const email = person.email.trim().toLowerCase();
+    const id = person.id.trim().toLowerCase();
+    const matches = pool.filter(
+      (row) =>
+        (email && row.email.trim().toLowerCase() === email) ||
+        (id && row.id.trim().toLowerCase() === id),
+    );
+    if (!matches.length) return undefined;
+    // Prefer the person-day that matches the chip person date, then Present, then any.
+    const day = dayKey(person.date);
+    const sameDay = day ? matches.filter((row) => dayKey(row.date) === day) : [];
+    const ranked = (sameDay.length ? sameDay : matches).slice().sort((left, right) => {
+      const lp = String(left.attendance || "").toLowerCase() === "present" ? 1 : 0;
+      const rp = String(right.attendance || "").toLowerCase() === "present" ? 1 : 0;
+      return rp - lp;
+    });
+    return ranked[0];
+  };
+
   const focusPeople = (rows: WorkdayPerson[]): DashboardRosterPerson[] => {
     const out: DashboardRosterPerson[] = [];
     const seen = new Set<string>();
     for (const person of rows) {
-      const email = person.email.trim().toLowerCase();
-      const id = person.id.trim().toLowerCase();
-      const match = (row: DashboardRosterPerson) =>
-        (email && row.email.trim().toLowerCase() === email) ||
-        (id && row.id.trim().toLowerCase() === id);
-      for (const hit of [bio.find(match), tivazo.find(match)]) {
-        if (!hit) continue;
-        const key = hit.email.trim().toLowerCase() || hit.id;
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        out.push(hit);
-      }
+      const day = dayKey(person.date);
+      const who = person.email.trim().toLowerCase() || person.id.trim().toLowerCase();
+      if (!who) continue;
+      const stamp = day ? `${who}|${day}` : who;
+      if (seen.has(stamp)) continue;
+      const bioHit = pickRosterMatch(bio, person);
+      const tivHit = pickRosterMatch(tivazo, person);
+      const hit = bioHit || tivHit;
+      if (!hit) continue;
+      seen.add(stamp);
+      out.push(day ? { ...hit, date: day } : hit);
     }
     return out;
   };
+
   const openChip = (
     id: string,
     title: string,
@@ -287,36 +316,46 @@ export function DashboardClockIns({
     rows: WorkdayPerson[],
   ) => {
     setDayModal(null);
+    const focus = focusPeople(rows);
+    const focusStamps = new Set(
+      focus.map((row) => {
+        const who = row.email.trim().toLowerCase() || row.id.trim().toLowerCase();
+        const day = dayKey(row.date);
+        return day ? `${who}|${day}` : who;
+      }).filter(Boolean),
+    );
+    const inFocus = (row: DashboardRosterPerson) => {
+      const who = row.email.trim().toLowerCase() || row.id.trim().toLowerCase();
+      if (!who) return false;
+      const day = dayKey(row.date);
+      if (day && focusStamps.has(`${who}|${day}`)) return true;
+      // Undated snap rows still pair when focus has that person any day.
+      return [...focusStamps].some((stamp) => stamp === who || stamp.startsWith(`${who}|`));
+    };
+    // Freeze the same scoped roster the chip counts used — prevents office-wide or
+    // live-overview bleed if filters change while the dialog is open.
     setPeopleSpec({
       id,
       source: source === "all" ? "combined" : source === "bio" ? "bio" : "tivazo",
       title,
       hint,
-      focus: focusPeople(rows),
+      focus,
       pageHref: peopleHref(rows, "present"),
+      bioSnap: bio.filter(inFocus),
+      tivazoSnap: tivazo.filter(inFocus),
     });
   };
   const scopeFetchedPeople = (rows: WorkdayPerson[]): WorkdayPerson[] => {
+    // Day fetch already sends teamId/group + q to the BFF. Re-applying an exact
+    // person.team === teamId check drops valid people when id/label differ.
     let next = rows;
-    const mid = (personId || memberId || "").trim().toLowerCase();
+    const mid = memberId.trim().toLowerCase();
     if (mid) {
       next = next.filter(
         (person) =>
           person.email.toLowerCase() === mid ||
           person.id.toLowerCase() === mid ||
           person.name.toLowerCase() === mid,
-      );
-    } else if (teamId) {
-      const key = teamId.trim().toLowerCase();
-      next = next.filter((person) => person.team.trim().toLowerCase() === key);
-    }
-    const needle = personQuery.trim().toLowerCase();
-    if (needle && !mid) {
-      next = next.filter(
-        (person) =>
-          person.name.toLowerCase().includes(needle) ||
-          person.email.toLowerCase().includes(needle) ||
-          person.team.toLowerCase().includes(needle),
       );
     }
     return uniqueWorkdayPeople(next);
@@ -350,12 +389,9 @@ export function DashboardClockIns({
     const local = peopleForDay(dayIso);
     // Parent already loaded this single focused day into bio/tivazo — trust local.
     const alreadyLoaded = singleDay && dayKey(focusedDay) === dayKey(dayIso);
-    // Member/team week often has dated period rows; office week does not (counts from presence API).
-    const hasDatedLocal = local.some((person) => dayKey(person.date) === dayKey(dayIso));
-    const scoped = Boolean(personId || memberId || teamId);
-    // Office multi-day: always fetch the day's Bio∪Tivazo roster (cell counts come from presence API).
-    // Member/team: trust dated local rows; fetch only when that day is missing.
-    const needFetch = !alreadyLoaded && (!scoped || !hasDatedLocal);
+    // Multi-day heatmap cells come from /dashboard/presence; always fetch that day's
+    // roster with the same Source + Group/Member params so the modal matches the cell.
+    const needFetch = !alreadyLoaded;
     setDayModal({
       date: dayIso,
       mode,
@@ -368,7 +404,7 @@ export function DashboardClockIns({
 
   // Fetch the clicked day's Present roster in-place (same APIs as Daily clock-ins day focus).
   const fetchDay = dayModal?.fetch ? dayModal.date : null;
-  const scopeMember = (personId || memberId || "").trim() || undefined;
+  const scopeMember = memberId.trim() || undefined;
   const scopeTeam = scopeMember ? undefined : teamId || undefined;
   const dayLogs = useQuery<ListPage<DailyLogRow>>(
     fetchDay
@@ -451,12 +487,8 @@ export function DashboardClockIns({
     dayActivities.loading,
     dayActivities.error,
     source,
-    todayIso,
-    personId,
-    memberId,
-    teamId,
-    personQuery,
-  ]);
+    todayIso, memberId,
+    teamId, ]);
 
   const spotlightHref = spotlight
     ? spotlight.sources.includes("bio")
@@ -481,7 +513,7 @@ export function DashboardClockIns({
       : (() => {
           const dayLabel = formatDayTitle(dayModal.date);
           const who =
-            (personId || memberId) && (spotlight?.name || visible[0]?.name || dayModal.people[0]?.name)
+            memberId.trim() && (spotlight?.name || visible[0]?.name || dayModal.people[0]?.name)
               ? spotlight?.name || visible[0]?.name || dayModal.people[0]?.name
               : null;
           if (dayModal.status === "upcoming") {
@@ -515,59 +547,6 @@ export function DashboardClockIns({
 
   return (
     <div className="smp-clockins">
-      <div className="smp-clockins-tools">
-        <FilterSelect
-          label="Person"
-          value={personId}
-          allLabel="Everyone in this view"
-          options={personOptions}
-          searchable
-          onChange={setPersonId}
-        />
-        <FilterSearch
-          value={personQuery}
-          onChange={(value) => {
-            setPersonQuery(value);
-            if (personId) setPersonId("");
-          }}
-          placeholder="Search name, email, or team"
-        />
-        <div className="smp-clockins-source">
-          <span className="smp-field__label">Source</span>
-          <div className="smp-segment smp-dashboard-source-switch" role="tablist" aria-label="Punch source">
-            <button
-              type="button"
-              role="tab"
-              className="smp-segment__btn"
-              data-active={source === "all" ? "true" : "false"}
-              onClick={() => onSourceChange?.("all")}
-            >
-              Combined
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className="smp-segment__btn"
-              data-source="biometrics"
-              data-active={source === "bio" ? "true" : "false"}
-              onClick={() => onSourceChange?.("bio")}
-            >
-              Biometrics
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className="smp-segment__btn"
-              data-source="tivazo"
-              data-active={source === "tivazo" ? "true" : "false"}
-              onClick={() => onSourceChange?.("tivazo")}
-            >
-              Tivazo
-            </button>
-          </div>
-        </div>
-      </div>
-
       {spotlight && spotlightHref ? (
           <Link href={spotlightHref} className="smp-clockins-spot" data-clickable="true">
             <div>
@@ -612,7 +591,7 @@ export function DashboardClockIns({
           <div className="smp-clockins-chips" role="group" aria-label="Clock-in status">
             <Chip
               label="Present"
-              hint={period === "range" ? "Unique Present in range" : "Status Present"}
+              hint={period === "range" ? "Person-days Present" : "Status Present"}
               value={present.length}
               tone="present"
               active={peopleSpec?.id === "present"}
@@ -621,7 +600,7 @@ export function DashboardClockIns({
                   "present",
                   `${sourceName} · Present`,
                   period === "range"
-                    ? "Unique Present people in this range"
+                    ? "Present person-days in this range (one row per person per day)"
                     : "Same Present rule as Biometrics / Tivazo cards",
                   present,
                 )
@@ -629,34 +608,62 @@ export function DashboardClockIns({
             />
             <Chip
               label="On time"
-              hint="In by 7:15"
+              hint={period === "range" ? "Person-days · in by 7:15" : "In by 7:15"}
               value={onTime.length}
               tone="ok"
               active={peopleSpec?.id === "on-time"}
-              onOpen={() => openChip("on-time", `${sourceName} · On time`, "In by 7:15", onTime)}
+              onOpen={() =>
+                openChip(
+                  "on-time",
+                  `${sourceName} · On time`,
+                  period === "range" ? "Person-days in by 7:15" : "In by 7:15",
+                  onTime,
+                )
+              }
             />
             <Chip
               label="Late"
-              hint="After 7:15"
+              hint={period === "range" ? "Person-days · after 7:15" : "After 7:15"}
               value={late.length}
               tone="late"
               active={peopleSpec?.id === "late"}
-              onOpen={() => openChip("late", `${sourceName} · Late`, "After 7:15", late)}
+              onOpen={() =>
+                openChip(
+                  "late",
+                  `${sourceName} · Late`,
+                  period === "range" ? "Person-days after 7:15" : "After 7:15",
+                  late,
+                )
+              }
             />
             <Chip
               label="Early leave"
-              hint="Out before 3:00"
+              hint={period === "range" ? "Person-days · out before 3:00" : "Out before 3:00"}
               value={early.length}
               tone="early"
               active={peopleSpec?.id === "early"}
-              onOpen={() => openChip("early", `${sourceName} · Early leave`, "Out before 3:00", early)}
+              onOpen={() =>
+                openChip(
+                  "early",
+                  `${sourceName} · Early leave`,
+                  period === "range" ? "Person-days out before 3:00" : "Out before 3:00",
+                  early,
+                )
+              }
             />
             <Chip
               label="Full day"
-              hint="In by 7:15 · till 3:00"
+              hint={period === "range" ? "Person-days · full day" : "In by 7:15 · till 3:00"}
               value={fullDay.length}
               active={peopleSpec?.id === "full-day"}
-              onOpen={() => openChip("full-day", `${sourceName} · Full day`, "Till 3:00", fullDay)}
+              onOpen={() =>
+                openChip(
+                  "full-day",
+                  `${sourceName} · Full day`,
+                  period === "range" ? "Person-days in by 7:15 and till 3:00" : "Till 3:00",
+                  fullDay,
+                )
+              }
             />
           </div>
 
@@ -669,7 +676,7 @@ export function DashboardClockIns({
               endDate={endDate || day}
               sourceName={sourceName}
               teamId={teamId}
-              memberId={personId || memberId}
+              memberId={memberId}
               onDayOpen={openDayModal}
               active={peopleSpec?.id === "presence" || dayModal != null}
               onOpen={() => {
@@ -682,7 +689,10 @@ export function DashboardClockIns({
                   id: "presence",
                   source: source === "all" ? "combined" : source === "bio" ? "bio" : "tivazo",
                   title: `Presence · ${sourceName}`,
-                  hint: "Present people in this view (same rule as the Present chip)",
+                  hint:
+                    period === "range"
+                      ? "Present person-days in this view (same rule as the Present chip)"
+                      : "Present people in this view (same rule as the Present chip)",
                   focus: focusPeople(present),
                   pageHref: peopleHref(present, "present"),
                 });
@@ -720,7 +730,7 @@ export function DashboardClockIns({
         eyebrow={
           dayModal?.status === "upcoming"
             ? "Upcoming"
-            : personId || memberId
+            : memberId
               ? "Day detail"
               : "Presence"
         }

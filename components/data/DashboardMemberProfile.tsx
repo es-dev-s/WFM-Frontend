@@ -1,6 +1,7 @@
 "use client";
 
 import type { DashboardMemberFocus } from "@/lib/api";
+import { workdayTimeMetrics } from "@/lib/tracked-time";
 
 function fact(value: string): string {
   return value.trim() || "—";
@@ -68,6 +69,17 @@ function SourceColumn({
 export function DashboardMemberProfile({ member }: { member: DashboardMemberFocus }) {
   const hasBio = member.sources.includes("Biometrics");
   const hasTivazo = member.sources.includes("Tivazo");
+  const bioMetrics = workdayTimeMetrics({
+    source: "bio",
+    inTime: member.biometrics.inTime,
+    outTime: member.biometrics.outTime,
+  });
+  const tivazoMetrics = workdayTimeMetrics({
+    source: "tivazo",
+    trackedTime: member.tivazo.tracked,
+    inTime: member.tivazo.inTime,
+    outTime: member.tivazo.outTime,
+  });
 
   return (
     <section className="smp-panel smp-dashboard-panel smp-dashboard-member" aria-label="Member overview">
@@ -97,9 +109,10 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
           rows={[
             { label: "In", value: member.biometrics.inTime },
             { label: "Out", value: member.biometrics.outTime },
+            { label: "Tracked", value: bioMetrics.trackedLabel },
+            { label: "Shortfall", value: bioMetrics.shortfallLabel },
             { label: "Team", value: member.biometrics.department },
             { label: "Role", value: member.biometrics.designation },
-            { label: "Joined", value: member.biometrics.joined },
           ]}
         />
         <SourceColumn
@@ -109,9 +122,10 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
           rows={[
             { label: "In", value: member.tivazo.inTime },
             { label: "Out", value: member.tivazo.outTime },
+            { label: "Tracked", value: tivazoMetrics.trackedLabel },
+            { label: "Shortfall", value: tivazoMetrics.shortfallLabel },
             { label: "Team", value: member.tivazo.group },
             { label: "Role", value: member.tivazo.designation },
-            { label: "Tracked", value: member.tivazo.tracked },
           ]}
         />
       </div>

@@ -31,6 +31,7 @@ import {
   type IdentityLike,
 } from "@/lib/identity";
 import {
+  LATE_AFTER_MIN,
   formatMinutes,
   mergeWorkdayPeople,
   parseClockMinutes,
@@ -156,17 +157,28 @@ function bioDoorSpanSeconds(row: DashboardRosterPerson): number {
   return delta * 60;
 }
 
+/**
+ * Avg Work Hour: Today = mean Present door span; multi-day = Σ daily seconds / person-days.
+ * `trackedSeconds` on range rows is absolute seconds (see rosterPerson / absoluteTrackedSeconds).
+ */
 function averageBioDoorFromRoster(people: DashboardRosterPerson[]): string {
   let total = 0;
-  let count = 0;
+  let denom = 0;
   for (const row of people) {
     if (!isPresentAttendance(row.attendance)) continue;
+    // Prefer presentDays (days that contributed work seconds) over attendedDays.
+    const days = row.presentDays || row.attendedDays || 0;
+    if (days > 1 && row.trackedSeconds > 0) {
+      total += row.trackedSeconds;
+      denom += days;
+      continue;
+    }
     const seconds = bioDoorSpanSeconds(row);
     if (seconds <= 0) continue;
     total += seconds;
-    count += 1;
+    denom += 1;
   }
-  return averageWorkedHours(total, count);
+  return averageWorkedHours(total, denom);
 }
 
 function workSpanSeconds(inMinutes: number | null, outMinutes: number | null): number {
@@ -177,40 +189,111 @@ function workSpanSeconds(inMinutes: number | null, outMinutes: number | null): n
   return delta * 60;
 }
 
-/** Combined Avg Work Hour: earliest in / latest out across Bio ∪ Tivazo, one span per person. */
+/** Combined Avg Work Hour: earliest in / latest out across Bio ∪ Tivazo, one span per person.
+ * Multi-day range rows: prefer Tivazo tracked/days, else Bio door-sum/days (not first→last clocks). */
 function combinedWorkHoursFromRoster(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]): string {
-  const people = new Map<string, { ins: number[]; outs: number[]; present: boolean }>();
-  const touch = (row: DashboardRosterPerson) => {
+  const people = new Map<
+    string,
+    {
+      ins: number[];
+      outs: number[];
+      present: boolean;
+      bioDays: number;
+      tivDays: number;
+      bioTracked: number;
+      tivTracked: number;
+    }
+  >();
+  const touch = (row: DashboardRosterPerson, source: "bio" | "tivazo") => {
     const key = keyOf(row);
     if (!key) return;
-    const prev = people.get(key) ?? { ins: [], outs: [], present: false };
+    const prev = people.get(key) ?? {
+      ins: [],
+      outs: [],
+      present: false,
+      bioDays: 0,
+      tivDays: 0,
+      bioTracked: 0,
+      tivTracked: 0,
+    };
     if (isPresentAttendance(row.attendance)) prev.present = true;
+    const days = row.presentDays || row.attendedDays || 0;
+    if (source === "bio") {
+      if (days > prev.bioDays) prev.bioDays = days;
+      if (row.trackedSeconds > prev.bioTracked) prev.bioTracked = row.trackedSeconds;
+    } else {
+      if (days > prev.tivDays) prev.tivDays = days;
+      if (row.trackedSeconds > prev.tivTracked) prev.tivTracked = row.trackedSeconds;
+    }
     const inPunch = punchOf(row, "in");
     const outPunch = punchOf(row, "out");
     if (inPunch) prev.ins.push(inPunch.hour * 60 + inPunch.minute);
     if (outPunch) prev.outs.push(outPunch.hour * 60 + outPunch.minute);
     people.set(key, prev);
   };
-  for (const row of bio) touch(row);
-  for (const row of tivazo) touch(row);
+  for (const row of bio) touch(row, "bio");
+  for (const row of tivazo) touch(row, "tivazo");
 
   let total = 0;
-  let count = 0;
+  let denom = 0;
   for (const row of people.values()) {
-    if (!row.present || !row.ins.length || !row.outs.length) continue;
+    if (!row.present) continue;
+    if (row.tivDays > 1 && row.tivTracked > 0) {
+      total += row.tivTracked;
+      denom += row.tivDays;
+      continue;
+    }
+    if (row.bioDays > 1 && row.bioTracked > 0) {
+      total += row.bioTracked;
+      denom += row.bioDays;
+      continue;
+    }
+    if (!row.ins.length || !row.outs.length) continue;
     const seconds = workSpanSeconds(Math.min(...row.ins), Math.max(...row.outs));
     if (seconds <= 0) continue;
     total += seconds;
-    count += 1;
+    denom += 1;
   }
-  return averageWorkedHours(total, count);
+  return averageWorkedHours(total, denom);
 }
 
 function combinedAvgClockInFromRoster(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]): string {
+  let sampleSum = 0;
+  let sampleCount = 0;
   const earliest = new Map<string, number>();
+  const presentKeys = new Set<string>();
+  const bioMap = new Map<string, DashboardRosterPerson>();
+  const tivMap = new Map<string, DashboardRosterPerson>();
+  for (const row of bio) {
+    const key = keyOf(row);
+    if (key) bioMap.set(key, row);
+  }
+  for (const row of tivazo) {
+    const key = keyOf(row);
+    if (key) tivMap.set(key, row);
+  }
+  for (const key of new Set([...bioMap.keys(), ...tivMap.keys()])) {
+    const bioRow = bioMap.get(key);
+    const tivRow = tivMap.get(key);
+    const bioSamples = bioRow?.clockInSamples ?? 0;
+    const tivSamples = tivRow?.clockInSamples ?? 0;
+    if (tivSamples > 1 || bioSamples > 1) {
+      if (tivSamples >= bioSamples && tivSamples > 0 && tivRow) {
+        sampleSum += tivRow.clockInSumMinutes ?? 0;
+        sampleCount += tivSamples;
+      } else if (bioSamples > 0 && bioRow) {
+        sampleSum += bioRow.clockInSumMinutes ?? 0;
+        sampleCount += bioSamples;
+      }
+      continue;
+    }
+    if (bioRow && isPresentAttendance(bioRow.attendance)) presentKeys.add(key);
+    if (tivRow && isPresentAttendance(tivRow.attendance)) presentKeys.add(key);
+  }
+  if (sampleCount > 0) return formatClockLabel(sampleSum / sampleCount);
   for (const row of [...bio, ...tivazo]) {
     const key = keyOf(row);
-    if (!key) continue;
+    if (!key || !presentKeys.has(key)) continue;
     const punch = punchOf(row, "in");
     if (!punch) continue;
     const minutes = punch.hour * 60 + punch.minute;
@@ -220,6 +303,34 @@ function combinedAvgClockInFromRoster(bio: DashboardRosterPerson[], tivazo: Dash
   if (!earliest.size) return "—";
   const avg = [...earliest.values()].reduce((sum, value) => sum + value, 0) / earliest.size;
   return formatClockLabel(avg);
+}
+
+/** Single-source Avg Clock-in: mean of daily first-ins when range samples exist; else Present-row mean. */
+function sourceAvgClockInFromRoster(rows: DashboardRosterPerson[]): string {
+  let sampleSum = 0;
+  let sampleCount = 0;
+  const punches: number[] = [];
+  for (const row of rows) {
+    const samples = row.clockInSamples ?? 0;
+    if (samples > 1 && (row.clockInSumMinutes ?? 0) > 0) {
+      sampleSum += row.clockInSumMinutes ?? 0;
+      sampleCount += samples;
+      continue;
+    }
+    if (!isPresentAttendance(row.attendance)) continue;
+    const punch = punchOf(row, "in");
+    if (!punch) continue;
+    punches.push(punch.hour * 60 + punch.minute);
+  }
+  if (sampleCount > 0) return formatClockLabel(sampleSum / sampleCount);
+  if (!punches.length) return "—";
+  const avg = punches.reduce((sum, value) => sum + value, 0) / punches.length;
+  return formatClockLabel(avg);
+}
+
+/** Single-source Avg Work Hour: mean Present in→out door span (same formula Bio uses). */
+function sourceWorkHoursFromRoster(rows: DashboardRosterPerson[]): string {
+  return averageBioDoorFromRoster(rows);
 }
 
 function uniqueAttendance(bio: DashboardRosterPerson[], tivazo: DashboardRosterPerson[]) {
@@ -232,6 +343,59 @@ function uniqueAttendance(bio: DashboardRosterPerson[], tivazo: DashboardRosterP
   let present = 0;
   for (const value of people.values()) if (value) present += 1;
   return { people: people.size, present };
+}
+
+/**
+ * Day-weighted Avg Attendance:
+ *   sum(present_person_days) / sum(expected_workdays)
+ * expected = attendedDays + absentDays (Weekly off / Leave / Holiday excluded upstream).
+ * Combined uses max(bio, tivazo) per person. Falls back to unique Present/Total for Today.
+ */
+function dayWeightedAttendance(
+  bio: DashboardRosterPerson[],
+  tivazo: DashboardRosterPerson[],
+): { rate: string; people: number; present: number } {
+  const bioMap = new Map<string, DashboardRosterPerson>();
+  const tivMap = new Map<string, DashboardRosterPerson>();
+  for (const row of bio) {
+    const key = keyOf(row);
+    if (key) bioMap.set(key, row);
+  }
+  for (const row of tivazo) {
+    const key = keyOf(row);
+    if (key) tivMap.set(key, row);
+  }
+  const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
+  let presentDays = 0;
+  let expectedDays = 0;
+  let hasDayWeights = false;
+  let presentPeople = 0;
+  for (const key of keys) {
+    const bioRow = bioMap.get(key);
+    const tivRow = tivMap.get(key);
+    const bioAtt = bioRow?.attendedDays ?? 0;
+    const bioAbs = bioRow?.absentDays ?? 0;
+    const tivAtt = tivRow?.attendedDays ?? 0;
+    const tivAbs = tivRow?.absentDays ?? 0;
+    const bioExpected = bioAtt + bioAbs;
+    const tivExpected = tivAtt + tivAbs;
+    if (bioExpected > 0 || tivExpected > 0) {
+      hasDayWeights = true;
+      presentDays += Math.max(bioAtt, tivAtt);
+      expectedDays += Math.max(bioExpected, tivExpected);
+    }
+    const flagged =
+      (bioRow && isPresentAttendance(bioRow.attendance)) ||
+      (tivRow && isPresentAttendance(tivRow.attendance)) ||
+      bioAtt > 0 ||
+      tivAtt > 0;
+    if (flagged) presentPeople += 1;
+  }
+  if (hasDayWeights && expectedDays > 0) {
+    return { rate: percent(presentDays, expectedDays), people: keys.size, present: presentPeople };
+  }
+  const unique = uniqueAttendance(bio, tivazo);
+  return { rate: percent(unique.present, unique.people), people: unique.people, present: unique.present };
 }
 
 function parseClock(label: string): { hour: number; minute: number } | null {
@@ -421,6 +585,90 @@ function collapsePunches(
   return map;
 }
 
+
+/** One WorkdayPerson per identity — earliest in / latest out across person-days (range punch cards). */
+function collapseWorkdaysByPerson(people: WorkdayPerson[]): WorkdayPerson[] {
+  type Acc = {
+    base: WorkdayPerson;
+    inMinutes: number | null;
+    outMinutes: number | null;
+    bioIn: number | null;
+    bioOut: number | null;
+    tivIn: number | null;
+    tivOut: number | null;
+    bioPresent: boolean;
+    tivazoPresent: boolean;
+  };
+  const map = new Map<string, Acc>();
+  const pickMin = (a: number | null, b: number | null) =>
+    a == null ? b : b == null ? a : Math.min(a, b);
+  const pickMax = (a: number | null, b: number | null) =>
+    a == null ? b : b == null ? a : Math.max(a, b);
+  for (const person of people) {
+    const who =
+      person.email.trim().toLowerCase() ||
+      person.id.trim().toLowerCase() ||
+      person.name.trim().toLowerCase();
+    if (!who) continue;
+    const bioIn = parseClockMinutes(person.bioInLabel);
+    const bioOut = parseClockMinutes(person.bioOutLabel);
+    const tivIn = parseClockMinutes(person.tivazoInLabel);
+    const tivOut = parseClockMinutes(person.tivazoOutLabel);
+    const prev = map.get(who);
+    if (!prev) {
+      map.set(who, {
+        base: person,
+        inMinutes: person.inMinutes,
+        outMinutes: person.outMinutes,
+        bioIn,
+        bioOut,
+        tivIn,
+        tivOut,
+        bioPresent: person.bioPresent,
+        tivazoPresent: person.tivazoPresent,
+      });
+      continue;
+    }
+    map.set(who, {
+      base: prev.base,
+      inMinutes: pickMin(prev.inMinutes, person.inMinutes),
+      outMinutes: pickMax(prev.outMinutes, person.outMinutes),
+      bioIn: pickMin(prev.bioIn, bioIn),
+      bioOut: pickMax(prev.bioOut, bioOut),
+      tivIn: pickMin(prev.tivIn, tivIn),
+      tivOut: pickMax(prev.tivOut, tivOut),
+      bioPresent: prev.bioPresent || person.bioPresent,
+      tivazoPresent: prev.tivazoPresent || person.tivazoPresent,
+    });
+  }
+  return [...map.values()].map((row) => {
+    const inMinutes = row.inMinutes;
+    const outMinutes = row.outMinutes;
+    return {
+      ...row.base,
+      date: "",
+      inMinutes,
+      outMinutes,
+      inLabel: inMinutes == null ? "—" : formatMinutes(inMinutes),
+      outLabel: outMinutes == null ? "—" : formatMinutes(outMinutes),
+      bioPresent: row.bioPresent,
+      tivazoPresent: row.tivazoPresent,
+      bioInLabel: row.bioIn == null ? "—" : formatMinutes(row.bioIn),
+      bioOutLabel: row.bioOut == null ? "—" : formatMinutes(row.bioOut),
+      tivazoInLabel: row.tivIn == null ? "—" : formatMinutes(row.tivIn),
+      tivazoOutLabel: row.tivOut == null ? "—" : formatMinutes(row.tivOut),
+      bioArrival: row.bioIn == null ? "missing" : row.bioIn > LATE_AFTER_MIN ? "late" : "on-time",
+      tivazoArrival: row.tivIn == null ? "missing" : row.tivIn > LATE_AFTER_MIN ? "late" : "on-time",
+      bioDeparture:
+        row.bioOut == null ? "missing" : row.bioOut < 15 * 60 ? "early" : "on-time",
+      tivazoDeparture:
+        row.tivOut == null ? "missing" : row.tivOut < 15 * 60 ? "early" : "on-time",
+      arrival: inMinutes == null ? "missing" : inMinutes > LATE_AFTER_MIN ? "late" : "on-time",
+      departure: outMinutes == null ? "missing" : outMinutes < 15 * 60 ? "early" : "on-time",
+    } satisfies WorkdayPerson;
+  });
+}
+
 export function buildPunchCompareBundle(
   bio: DashboardRosterPerson[],
   tivazo: DashboardRosterPerson[],
@@ -429,7 +677,9 @@ export function buildPunchCompareBundle(
   const period = options?.period ?? "day";
   const todayArg = options?.todayDate?.trim() || options?.undatedIsToday === true;
   // Single source of truth with chip cards: confirmed outs, rest days excluded, identity merge.
-  const people = mergeWorkdayPeople(bio, tivazo, todayArg || false);
+  const merged = mergeWorkdayPeople(bio, tivazo, todayArg || false);
+  // Range cards + modals both list unique people (not person-day punch samples).
+  const people = period === "range" ? collapseWorkdaysByPerson(merged) : merged;
 
   const bioIn: number[] = [];
   const tivIn: number[] = [];
@@ -687,6 +937,8 @@ function memberFocus(
   const tiv = tivazo[0];
   const bioRow = bio[0];
   if (!tiv && !bioRow) return null;
+  const bioPresent = isPresentAttendance(bioRow?.attendance);
+  const tivPresent = isPresentAttendance(tiv?.attendance);
   return {
     name: tiv?.name || bioRow?.name || "",
     email: tiv?.email || bioRow?.email || "",
@@ -694,18 +946,18 @@ function memberFocus(
     sources: [...(bioRow ? ["Biometrics"] : []), ...(tiv ? ["Tivazo"] : [])],
     biometrics: {
       day: normalizeDayStatus(bioRow?.attendance),
-      inTime: bioRow?.startTime || "",
-      outTime: bioRow?.endTime || "",
+      inTime: bioPresent ? bioRow?.startTime || "" : "",
+      outTime: bioPresent ? bioRow?.endTime || "" : "",
       department: bioRow ? rankingTeam(bioRow) : "",
       designation: bioRow?.designation || "",
       joined: bioRow?.joinDate || "",
     },
     tivazo: {
-      live: titleStatus(tiv?.status),
+      live: tivPresent ? titleStatus(tiv?.status) : "",
       day: normalizeDayStatus(tiv?.attendance),
-      inTime: tiv?.clockedIn || "",
-      outTime: tiv?.lastScreenshot || "",
-      tracked: tiv?.trackedLabel || "",
+      inTime: tivPresent ? tiv?.clockedIn || "" : "",
+      outTime: tivPresent ? tiv?.lastScreenshot || "" : "",
+      tracked: tivPresent ? tiv?.trackedLabel || "" : "",
       group: tiv ? rankingTeam(tiv) : "",
       designation: tiv?.designation || "",
     },
@@ -778,15 +1030,23 @@ export function selectVisibleRoster(
   return selectPeople(overview, teamId, memberId);
 }
 
+export type PunchSourceFilter = "all" | "bio" | "tivazo";
+
 export function scopeDashboard(
   overview: DashboardOverview,
   teamId: string,
   memberId: string,
+  source: PunchSourceFilter = "all",
 ): DashboardOverview {
   const roster = overview.roster;
-  if (!roster || (!teamId && !memberId)) return overview;
+  // Rescope when Group/Member filters apply OR when Source is not Combined
+  // (top Avg cards must follow the punch Source strip).
+  if (!roster || (!teamId && !memberId && source === "all")) return overview;
 
-  const { bio: visibleBio, tivazo: visibleTivazo } = selectPeople(overview, teamId, memberId);
+  const { bio: scopedBio, tivazo: scopedTivazo } = selectPeople(overview, teamId, memberId);
+  // Metric roster follows Source; Source Snapshots / coverage still use full scoped sets below.
+  const metricBio = source === "tivazo" ? [] : scopedBio;
+  const metricTivazo = source === "bio" ? [] : scopedTivazo;
   const allTeams = [...overview.filters.teams, ...overview.filters.supervisors];
   // Keep the Member filter populated with everyone in scope (team or all), not only the selected member.
   const { bio: filterBio, tivazo: filterTivazo } = selectPeople(overview, teamId, "");
@@ -795,18 +1055,30 @@ export function scopeDashboard(
     .map((row) => ({ id: keyOf(row) || row.id, label: row.name }))
     .sort((left, right) => left.label.localeCompare(right.label));
 
-  const biomatic = recountBio(visibleBio);
-  const tivazo = recountTivazo(visibleTivazo);
-  const unique = uniqueAttendance(visibleBio, visibleTivazo);
+  const biomatic = recountBio(scopedBio);
+  const tivazo = recountTivazo(scopedTivazo);
+  const unique = dayWeightedAttendance(metricBio, metricTivazo);
+  const avgWorkHours =
+    source === "bio"
+      ? sourceWorkHoursFromRoster(metricBio)
+      : source === "tivazo"
+        ? sourceWorkHoursFromRoster(metricTivazo)
+        : combinedWorkHoursFromRoster(metricBio, metricTivazo);
+  const avgClockIn =
+    source === "bio"
+      ? sourceAvgClockInFromRoster(metricBio)
+      : source === "tivazo"
+        ? sourceAvgClockInFromRoster(metricTivazo)
+        : combinedAvgClockInFromRoster(metricBio, metricTivazo);
   const hourly = {
-    biometrics: buildHourly(visibleBio, "in"),
-    tivazo: buildHourly(visibleTivazo, "in"),
-    compare: buildPunchCompare(visibleBio, visibleTivazo),
+    biometrics: buildHourly(metricBio, "in"),
+    tivazo: buildHourly(metricTivazo, "in"),
+    compare: buildPunchCompare(metricBio, metricTivazo),
   };
   const leaderboards = {
-    present: buildLeaderboard(visibleTivazo, "present"),
-    attendance: buildLeaderboard(visibleTivazo, "attendance"),
-    utilization: buildLeaderboard(visibleTivazo, "utilization"),
+    present: buildLeaderboard(scopedTivazo, "present"),
+    attendance: buildLeaderboard(scopedTivazo, "attendance"),
+    utilization: buildLeaderboard(scopedTivazo, "utilization"),
   };
 
   return {
@@ -816,9 +1088,9 @@ export function scopeDashboard(
       totalMembers: unique.people,
       biomaticMembers: biomatic.totalMembers,
       tivazoMembers: tivazo.totalMembers,
-      avgAttendance: percent(unique.present, unique.people),
-      avgWorkHours: combinedWorkHoursFromRoster(visibleBio, visibleTivazo),
-      avgClockIn: combinedAvgClockInFromRoster(visibleBio, visibleTivazo),
+      avgAttendance: unique.rate,
+      avgWorkHours,
+      avgClockIn,
       biomaticPresent: biomatic.presentMembers,
       bioPresent: biomatic.presentMembers,
       bioTotal: biomatic.totalMembers,
@@ -826,11 +1098,12 @@ export function scopeDashboard(
       tivazoTotal: tivazo.totalMembers,
       bioAttendance: percent(biomatic.presentMembers, biomatic.totalMembers),
       tivazoAttendance: percent(tivazo.presentMembers, tivazo.totalMembers),
-      bioAvgWorkHours: averageBioDoorFromRoster(visibleBio),
+      bioAvgWorkHours: averageBioDoorFromRoster(scopedBio),
       tivazoAvgWorkHours: tivazo.avgWorkHours,
       bioClockIn: hourly.compare.checkIn.first.time,
       tivazoClockIn: hourly.compare.checkIn.second.time,
-      avgSourceGap: hourly.compare.avgGap,
+      // Bio↔Tivazo lag is only meaningful for Combined.
+      avgSourceGap: source === "all" ? hourly.compare.avgGap : "—",
     },
     filters: {
       ...overview.filters,
@@ -839,7 +1112,7 @@ export function scopeDashboard(
     leaderboard: leaderboards.present,
     leaderboards,
     hourly,
-    member: memberId ? memberFocus(visibleBio, visibleTivazo) : null,
+    member: memberId ? memberFocus(scopedBio, scopedTivazo) : null,
     biomatic,
     tivazo,
     coverage: buildCoverage(

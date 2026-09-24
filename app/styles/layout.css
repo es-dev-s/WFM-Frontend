@@ -821,10 +821,21 @@
   container-name: page;
 }
 
-/* Fill pages (Home dashboard, tables): main__inner does not scroll — the stage does. */
+/* Fill pages (tables): main__inner does not scroll — the stage/table does.
+   Home dashboard is an exception: unlock main__inner so the page can scroll
+   (nested stage scrollports were clipping with no visible scrollbar). */
 .smp-main__inner:has(.smp-page-stack--fill) {
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+.smp-main__inner:has(.smp-page-stack--dashboard),
+.smp-main__inner:has(.smp-page-stack--fill.smp-page-stack--dashboard) {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
 }
 
 

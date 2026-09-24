@@ -2,7 +2,7 @@
 
 import { useMenu } from "@/hooks/use-menu";
 import { Check, ChevronDown } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export type FilterOption = {
   id: string;
@@ -16,6 +16,8 @@ type FilterSelectProps = {
   allLabel: string;
   onChange: (value: string) => void;
   searchable?: boolean;
+  /** Visually hide the field label (kept for a11y via aria on the trigger). */
+  hideLabel?: boolean;
 };
 
 export function FilterSelect({
@@ -25,9 +27,11 @@ export function FilterSelect({
   allLabel,
   onChange,
   searchable = false,
+  hideLabel = false,
 }: FilterSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const { menuId, rootRef } = useMenu({
     open,
     onClose: () => {
@@ -35,6 +39,22 @@ export function FilterSelect({
       setSearch("");
     },
   });
+
+  // Focus search after open so one click → type (wait a frame for popover paint).
+  useEffect(() => {
+    if (!open || !searchable) return;
+    let cancelled = false;
+    const id = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        searchRef.current?.focus({ preventScroll: true });
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(id);
+    };
+  }, [open, searchable]);
 
   const matched = options.find((option) => option.id === value);
   const [sticky, setSticky] = useState({ id: "", label: allLabel });
@@ -66,13 +86,16 @@ export function FilterSelect({
       ref={rootRef}
       data-open={open ? "true" : "false"}
     >
-      <span className="smp-field__label">{label}</span>
+      <span className="smp-field__label" data-hidden={hideLabel ? "true" : undefined}>
+        {label}
+      </span>
       <button
         type="button"
         className="smp-filter-select__trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={menuId}
+        aria-label={hideLabel ? label : undefined}
         onClick={() => setOpen((currentOpen) => !currentOpen)}
       >
         <span className="smp-filter-select__value">{current}</span>
@@ -82,6 +105,7 @@ export function FilterSelect({
         <div className="smp-filter-select__menu" role="listbox" aria-label={label}>
           {searchable ? (
             <input
+              ref={searchRef}
               className="smp-filter-select__search"
               type="search"
               value={search}

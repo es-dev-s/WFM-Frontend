@@ -2,6 +2,7 @@
 
 import { DashboardClockIns } from "@/components/data/DashboardClockIns";
 import { DashboardPeriodDays } from "@/components/data/DashboardPeriodDays";
+import { PunchSourceSwitch } from "@/components/data/PunchSourceSwitch";
 import { DashboardPunchCompare } from "@/components/data/DashboardPunchCompare";
 import { QueryState } from "@/components/data/QueryState";
 import {
@@ -13,11 +14,17 @@ import {
   useQuery,
   withQuery,
 } from "@/lib/api";
-import { buildPunchCompare, scopeRosterPeople } from "@/lib/dashboard-scope";
+import { buildPunchCompareBundle, scopeRosterPeople } from "@/lib/dashboard-scope";
 import { addDaysISO, formatDisplayDate, formatRangeLabel, isoDateInZone } from "@/lib/datetime";
 import { createIdentityIndex, identityCanonical } from "@/lib/identity";
-import { normalizeDayStatus } from "@/lib/server/metrics";
-import { averageWorkdayTimes, dailyLogToRoster, mergeWorkdayPeople, parseClockMinutes } from "@/lib/workday-clock";
+import { isPresentAttendance, normalizeDayStatus } from "@/lib/server/metrics";
+import {
+  averageWorkdayTimes,
+  dailyLogToRoster,
+  mergeWorkdayPeople,
+  parseClockMinutes,
+  presentPeople,
+} from "@/lib/workday-clock";
 import { useEffect, useMemo, useState } from "react";
 
 function stampDate(rows: DashboardRosterPerson[], date: string): DashboardRosterPerson[] {
@@ -89,17 +96,23 @@ function overlayLivePunches(
     const rec = histMap.get(key);
     const now = liveMap.get(key);
     if (rec && now) {
+      const livePresent = isPresentAttendance(now.attendance);
       return {
         ...rec,
-        status: now.status || rec.status,
+        status: livePresent ? now.status || rec.status : rec.status,
         attendance: preferAttendanceStatus(now.attendance, rec.attendance),
-        // Earliest in / latest out across live + history so overlays cannot erase a real punch.
-        startTime: pickEarlierLabel(now.startTime, rec.startTime),
-        endTime: pickLaterLabel(now.endTime, rec.endTime),
-        clockedIn: pickEarlierLabel(now.clockedIn, rec.clockedIn),
-        lastScreenshot: pickLaterLabel(now.lastScreenshot, rec.lastScreenshot),
-        trackedSeconds: Math.max(now.trackedSeconds || 0, rec.trackedSeconds || 0),
-        trackedLabel: now.trackedLabel || rec.trackedLabel,
+        // Only blend live punches when live is Present — never paint Absent/Leave
+        // with another day's clocked_in / tracked.
+        startTime: livePresent ? pickEarlierLabel(now.startTime, rec.startTime) : rec.startTime,
+        endTime: livePresent ? pickLaterLabel(now.endTime, rec.endTime) : rec.endTime,
+        clockedIn: livePresent ? pickEarlierLabel(now.clockedIn, rec.clockedIn) : rec.clockedIn,
+        lastScreenshot: livePresent
+          ? pickLaterLabel(now.lastScreenshot, rec.lastScreenshot)
+          : rec.lastScreenshot,
+        trackedSeconds: livePresent
+          ? Math.max(now.trackedSeconds || 0, rec.trackedSeconds || 0)
+          : rec.trackedSeconds,
+        trackedLabel: livePresent ? now.trackedLabel || rec.trackedLabel : rec.trackedLabel,
       };
     }
     return rec ?? now!;
@@ -121,6 +134,8 @@ export function DashboardHourlyPanel({
   supervisors,
   startDate,
   endDate,
+  source = "all",
+  onSourceChange,
 }: {
   bio: DashboardRosterPerson[];
   tivazo: DashboardRosterPerson[];
@@ -136,13 +151,14 @@ export function DashboardHourlyPanel({
   supervisors: FilterOption[];
   startDate: string;
   endDate: string;
+  source?: "all" | "bio" | "tivazo";
+  onSourceChange?: (source: "all" | "bio" | "tivazo") => void;
 }) {
   const today = isoDateInZone();
   const dashboardRange = startDate !== endDate;
   const rangeKey = `${startDate}:${endDate}`;
   const [pickedDay, setPickedDay] = useState<string | null>(null);
   const [seenRange, setSeenRange] = useState(rangeKey);
-  const [source, setSource] = useState<"all" | "bio" | "tivazo">("all");
 
   if (seenRange !== rangeKey) {
     setSeenRange(rangeKey);
@@ -163,12 +179,22 @@ export function DashboardHourlyPanel({
     : formatDisplayDate(viewStart);
   const dayFocus = !viewingRange;
   const hasScope = Boolean(teamId || memberId);
+  // Attendance-by-day table stays scoped-only (heavy UI).
+  // Full-org week/month/3-month must NOT pull all daily-logs + activities — that
+  // freezes the UI for many seconds. Overview roster already has period aggregates.
   const needPeriodDays = dashboardRange && hasScope;
+  const needPeriodRoster = viewingRange && hasScope;
 
   const logs = useQuery<ListPage<DailyLogRow>>(
     dayFocus
-      ? withQuery("/daily-logs", { startDate: viewStart, endDate: viewStart, all: 1 })
-      : needPeriodDays
+      ? withQuery("/daily-logs", {
+          startDate: viewStart,
+          endDate: viewStart,
+          all: 1,
+          teamId: memberId ? undefined : teamId || undefined,
+          q: memberId || undefined,
+        })
+      : needPeriodRoster
         ? withQuery("/daily-logs", {
             startDate,
             endDate,
@@ -180,8 +206,15 @@ export function DashboardHourlyPanel({
   );
   const activities = useQuery<ListPage<DailyLogRow>>(
     dayFocus
-      ? withQuery("/tivazo/activities", { startDate: viewStart, endDate: viewStart, all: 1 })
-      : needPeriodDays
+      ? withQuery("/tivazo/activities", {
+          startDate: viewStart,
+          endDate: viewStart,
+          all: 1,
+          teamId: memberId ? undefined : teamId || undefined,
+          group: memberId ? undefined : teamId || undefined,
+          q: memberId || undefined,
+        })
+      : needPeriodRoster
         ? withQuery("/tivazo/activities", {
             startDate,
             endDate,
@@ -195,21 +228,34 @@ export function DashboardHourlyPanel({
 
   useEffect(() => {
     if (!dayFocus) return;
+    // Prefetch only the selected person (or skip full-org adjacent days). Full
+    // `/tivazo/activities?all=1` for neighboring days was taking 10–20s each and
+    // flooding the network while flipping calendar days.
     const prev = addDaysISO(viewStart, -1);
     const next = addDaysISO(viewStart, 1);
     const maxDay = dashboardRange ? (endDate < today ? endDate : today) : today;
     const minDay = dashboardRange ? startDate : undefined;
+    const scope = {
+      all: 1 as const,
+      teamId: memberId ? undefined : teamId || undefined,
+      group: memberId ? undefined : teamId || undefined,
+      q: memberId || undefined,
+    };
     const urls: string[] = [];
     if (!minDay || prev >= minDay) {
-      urls.push(withQuery("/daily-logs", { startDate: prev, endDate: prev, all: 1 }));
-      urls.push(withQuery("/tivazo/activities", { startDate: prev, endDate: prev, all: 1 }));
+      urls.push(withQuery("/daily-logs", { startDate: prev, endDate: prev, ...scope }));
+      if (memberId || teamId) {
+        urls.push(withQuery("/tivazo/activities", { startDate: prev, endDate: prev, ...scope }));
+      }
     }
     if (next <= maxDay) {
-      urls.push(withQuery("/daily-logs", { startDate: next, endDate: next, all: 1 }));
-      urls.push(withQuery("/tivazo/activities", { startDate: next, endDate: next, all: 1 }));
+      urls.push(withQuery("/daily-logs", { startDate: next, endDate: next, ...scope }));
+      if (memberId || teamId) {
+        urls.push(withQuery("/tivazo/activities", { startDate: next, endDate: next, ...scope }));
+      }
     }
     prefetchQueries(urls, 2);
-  }, [dayFocus, viewStart, dashboardRange, startDate, endDate, today]);
+  }, [dayFocus, viewStart, dashboardRange, startDate, endDate, today, memberId, teamId]);
 
   const roster = useMemo(() => {
     const liveBioRows = stampDate(liveBio?.length ? liveBio : bio, viewStart);
@@ -217,7 +263,7 @@ export function DashboardHourlyPanel({
     if (viewingRange) {
       const logItems = logs.data?.items ?? [];
       const activityItems = activities.data?.items ?? [];
-      if (needPeriodDays && (logItems.length > 0 || activityItems.length > 0)) {
+      if (needPeriodRoster && (logItems.length > 0 || activityItems.length > 0)) {
         const bioRows = logItems.map((row) => dailyLogToRoster(row, "bio"));
         const tivazoRows = activityItems.map((row) => dailyLogToRoster(row, "tivazo"));
         const scoped = scopeRosterPeople(bioRows, tivazoRows, teamId, memberId, teams, supervisors);
@@ -226,20 +272,30 @@ export function DashboardHourlyPanel({
           tivazo: overlayRangeToday(scoped.tivazo, liveTivazoRows, today),
         };
       }
+      // Keep overview roster visible while scoped period logs load — never blank the panel.
       const scoped = scopeRosterPeople(bio, tivazo, teamId, memberId, teams, supervisors);
       return { bio: scoped.bio, tivazo: scoped.tivazo };
     }
     const logItems = logs.data?.items ?? [];
     const activityItems = activities.data?.items ?? [];
-    const hasHistory = logItems.length > 0 || activityItems.length > 0;
-    const todayView = viewStart === today;
-    if (!hasHistory) {
-      return { bio: liveBioRows, tivazo: liveTivazoRows };
-    }
+    const logsPending = (logs.loading && !logs.data) || (activities.loading && !activities.data);
     const bioRows = logItems.filter((row) => onDay(row, viewStart)).map((row) => dailyLogToRoster(row, "bio"));
     const tivazoRows = activityItems
       .filter((row) => onDay(row, viewStart))
       .map((row) => dailyLogToRoster(row, "tivazo"));
+    const hasDayRows = bioRows.length > 0 || tivazoRows.length > 0;
+    const todayView = viewStart === today;
+    // Soft-kept previous-day payloads must not blank this day — fall back to overview.
+    if (!hasDayRows) {
+      if (logsPending) {
+        return { bio: liveBioRows, tivazo: liveTivazoRows };
+      }
+      const scopedOverview = scopeRosterPeople(bio, tivazo, teamId, memberId, teams, supervisors);
+      return {
+        bio: todayView ? overlayLivePunches(scopedOverview.bio, liveBioRows) : scopedOverview.bio,
+        tivazo: todayView ? overlayLivePunches(scopedOverview.tivazo, liveTivazoRows) : scopedOverview.tivazo,
+      };
+    }
     const scoped = scopeRosterPeople(bioRows, tivazoRows, teamId, memberId, teams, supervisors);
     return {
       bio: todayView ? overlayLivePunches(scoped.bio, liveBioRows) : scoped.bio,
@@ -259,29 +315,30 @@ export function DashboardHourlyPanel({
     memberId,
     teams,
     supervisors,
-    needPeriodDays,
+    needPeriodRoster,
+    logs.loading,
+    activities.loading,
   ]);
 
-  const compare = useMemo(
-    () =>
-      buildPunchCompare(roster.bio, roster.tivazo, {
-        todayDate: today,
-        undatedIsToday: !viewingRange && viewStart === today,
-        period,
-      }),
-    [roster.bio, roster.tivazo, today, viewingRange, viewStart, period],
-  );
-  const kpis = useMemo(
-    () =>
-      averageWorkdayTimes(
-        mergeWorkdayPeople(
-          source === "tivazo" ? [] : roster.bio,
-          source === "bio" ? [] : roster.tivazo,
-          today,
-        ),
-      ),
-    [roster.bio, roster.tivazo, source, today],
-  );
+  const sourceBio = source === "tivazo" ? [] : roster.bio;
+  const sourceTivazo = source === "bio" ? [] : roster.tivazo;
+  const punchBundle = useMemo(() => {
+    // Punch compare is Bio↔Tivazo by design — only meaningful for Combined.
+    const options = {
+      todayDate: today,
+      undatedIsToday: !viewingRange && viewStart === today,
+      period,
+    } as const;
+    return source === "all"
+      ? buildPunchCompareBundle(roster.bio, roster.tivazo, options)
+      : buildPunchCompareBundle(sourceBio, sourceTivazo, options);
+  }, [roster.bio, roster.tivazo, sourceBio, sourceTivazo, source, today, viewingRange, viewStart, period]);
+  const compare = punchBundle.compare;
+  const kpis = useMemo(() => {
+    const merged = mergeWorkdayPeople(sourceBio, sourceTivazo, today);
+    // Median Clock in / out among Present for the selected Source only.
+    return averageWorkdayTimes(presentPeople(merged, source));
+  }, [sourceBio, sourceTivazo, source, today]);
 
   const dayLoading =
     dayFocus &&
@@ -298,16 +355,28 @@ export function DashboardHourlyPanel({
       aria-label="Daily clock-ins"
     >
       <header className="smp-panel__head smp-dashboard-hourly-head">
-        <h2 className="smp-panel__title">Daily clock-ins</h2>
-        <div className="smp-clockins-kpis" aria-label="Average clock times">
-          <p className="smp-clockins-kpi" data-empty={overallIn === "—" ? "true" : undefined}>
-            <span>Clock in</span>
-            <strong>{overallIn}</strong>
-          </p>
-          <p className="smp-clockins-kpi" data-empty={overallOut === "—" ? "true" : undefined}>
-            <span>Clock out</span>
-            <strong>{overallOut}</strong>
-          </p>
+        <div className="smp-dashboard-hourly-copy">
+          <h2 className="smp-panel__title">Daily clock-ins</h2>
+        </div>
+        <div className="smp-dashboard-hourly-tools">
+          {onSourceChange ? (
+            <PunchSourceSwitch
+              value={source}
+              onChange={onSourceChange}
+              className="smp-dashboard-hourly-source"
+              id="daily-clockins-source"
+            />
+          ) : null}
+          <div className="smp-clockins-kpis" aria-label="Average clock times">
+            <p className="smp-clockins-kpi" data-empty={overallIn === "—" ? "true" : undefined}>
+              <span>Clock in</span>
+              <strong>{overallIn}</strong>
+            </p>
+            <p className="smp-clockins-kpi" data-empty={overallOut === "—" ? "true" : undefined}>
+              <span>Clock out</span>
+              <strong>{overallOut}</strong>
+            </p>
+          </div>
         </div>
       </header>
 
@@ -351,6 +420,7 @@ export function DashboardHourlyPanel({
               today={today}
               teamLabel={teamLabel}
               onPickDay={setFocus}
+              source={source}
             />
           ) : null}
           <DashboardClockIns
@@ -366,17 +436,23 @@ export function DashboardHourlyPanel({
             startDate={viewStart}
             endDate={viewEnd}
             source={source}
-            onSourceChange={setSource}
+            onSourceChange={onSourceChange}
           />
-          <DashboardPunchCompare
-            compare={compare}
-            periodLabel={viewingRange ? `Average · ${periodLabel}` : periodLabel}
-            countNoun={viewingRange ? "punches" : "people"}
-            startDate={viewStart}
-            endDate={viewEnd}
-            teamId={teamId}
-            memberId={memberId}
-          />
+          {source === "all" ? (
+            <DashboardPunchCompare
+              compare={compare}
+              focus={punchBundle.focus}
+              bio={roster.bio}
+              tivazo={roster.tivazo}
+              periodLabel={viewingRange ? `Average · ${periodLabel}` : periodLabel}
+              dateLabel={periodLabel}
+              countNoun="people"
+              startDate={viewStart}
+              endDate={viewEnd}
+              teamId={teamId}
+              memberId={memberId}
+            />
+          ) : null}
         </>
       )}
     </section>

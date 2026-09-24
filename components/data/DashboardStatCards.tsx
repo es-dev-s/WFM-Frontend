@@ -86,7 +86,7 @@ export function DashboardStatCards({
             className="smp-stat-card"
             data-pending={summary ? undefined : "true"}
             {...(tone ? { "data-tone": tone } : {})}
-            title="Average Bio↔Tivazo lag at clock-in and clock-out"
+            title="Average Bio↔Tivazo lag at clock-in and clock-out (Combined source only)"
           >
             {body}
           </div>

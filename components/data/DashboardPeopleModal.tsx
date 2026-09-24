@@ -205,7 +205,7 @@ export function DashboardPeopleModal({
         ...row,
         gap: bioToTivazoInGap(row.bio, row.tivazo),
       })),
-    [spec?.focus, bio, tivazo],
+    [spec?.focus, spec?.bioSnap, spec?.tivazoSnap, bio, tivazo],
   );
   const needle = search.trim().toLowerCase();
   const visible = useMemo(
@@ -243,7 +243,7 @@ export function DashboardPeopleModal({
       <div className="smp-coverage-backdrop" onClick={onClose} />
       <div
         ref={dialogRef}
-        className="smp-coverage-dialog smp-people-dialog"
+        className="smp-coverage-dialog smp-people-dialog smp-people-dialog--dense"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -255,7 +255,14 @@ export function DashboardPeopleModal({
               {spec.title}
             </h2>
             <p className="smp-coverage-dialog__meta">
-              {spec.hint} · {dateLabel} · {rows.length} {rows.length === 1 ? "person" : "people"}
+              {spec.hint} · {dateLabel} · {rows.length}{" "}
+              {rows.some((row) => row.date)
+                ? rows.length === 1
+                  ? "person-day"
+                  : "person-days"
+                : rows.length === 1
+                  ? "person"
+                  : "people"}
             </p>
           </div>
           <div className="smp-coverage-dialog__tools">
@@ -288,7 +295,9 @@ export function DashboardPeopleModal({
           <div className="smp-coverage-stat">
             <span className="smp-coverage-stat__value">{rows.length}</span>
             <span className="smp-coverage-stat__label">In this card</span>
-            <span className="smp-coverage-stat__hint">Same people as the dashboard count</span>
+            <span className="smp-coverage-stat__hint">
+              {rows.some((row) => row.date) ? "Same person-days as the chip count" : "Same people as the dashboard count"}
+            </span>
           </div>
           <div className="smp-coverage-stat" data-source="biometrics">
             <span className="smp-coverage-stat__value">{both}</span>
@@ -356,6 +365,7 @@ export function DashboardPeopleModal({
                           <span className="smp-person__copy">
                             <span className="smp-person__name">{row.name}</span>
                             <span className="smp-person__email" data-missing={row.email ? undefined : "true"}>
+                              {row.date ? `${row.date} · ` : ""}
                               {row.email || "No email"}
                             </span>
                           </span>
@@ -370,7 +380,10 @@ export function DashboardPeopleModal({
                           </span>
                           <span className="smp-person__copy">
                             <span className="smp-person__name">{row.name}</span>
-                            <span className="smp-person__email">{row.email || "No email"}</span>
+                            <span className="smp-person__email">
+                              {row.date ? `${row.date} · ` : ""}
+                              {row.email || "No email"}
+                            </span>
                           </span>
                         </span>
                       </span>

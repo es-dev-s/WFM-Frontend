@@ -9,7 +9,7 @@ import {
   type PunchCompareSlot,
 } from "@/lib/dashboard-scope";
 import { biomaticHref, tivazoHref } from "@/lib/href";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 function peopleLabel(count: number, noun: string): string {
   if (count <= 0) return "No data";
@@ -21,18 +21,32 @@ function peopleLabel(count: number, noun: string): string {
   return `${count} ${noun}`;
 }
 
+function uniqueByPerson(rows: DashboardRosterPerson[]): DashboardRosterPerson[] {
+  const seen = new Set<string>();
+  const out: DashboardRosterPerson[] = [];
+  for (const row of rows) {
+    const key = row.email.trim().toLowerCase() || row.id.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
 function Cell({
   label,
   value,
   meta,
   tone,
   onOpen,
+  ariaDetail,
 }: {
   label: string;
   value: string;
   meta: string;
   tone: "bio" | "tivazo" | "gap" | "overall";
   onOpen?: () => void;
+  ariaDetail?: string;
 }) {
   const inner = (
     <>
@@ -51,13 +65,14 @@ function Cell({
         data-tone={tone}
         data-interactive="true"
         onClick={onOpen}
+        aria-label={ariaDetail || `View ${label}: ${value} · ${meta}`}
       >
         {inner}
       </button>
     );
   }
   return (
-    <div className="smp-punch-cell" data-tone={tone}>
+    <div className="smp-punch-cell" data-tone={tone} data-static="true">
       {inner}
     </div>
   );
@@ -113,6 +128,7 @@ function LaneCard({
           value={first.time}
           meta={peopleLabel(first.people, countNoun)}
           tone={firstTone}
+          ariaDetail={`${title} · ${firstLabel}: ${first.time}, ${peopleLabel(first.people, countNoun)}. Open people.`}
           onOpen={
             canOpen(first.people)
               ? () => onOpen(firstSlot, `${title} · ${firstLabel}`, first)
@@ -124,6 +140,11 @@ function LaneCard({
           value={gap.label}
           meta={gap.note}
           tone="gap"
+          ariaDetail={
+            canOpen(gap.people)
+              ? `${title} · Between: ${gap.label}, ${gap.note}. Open paired people.`
+              : undefined
+          }
           onOpen={
             canOpen(gap.people)
               ? () => onOpen(gapSlot, `${title} · Between`, gap)
@@ -135,6 +156,7 @@ function LaneCard({
           value={second.time}
           meta={peopleLabel(second.people, countNoun)}
           tone={secondTone}
+          ariaDetail={`${title} · ${secondLabel}: ${second.time}, ${peopleLabel(second.people, countNoun)}. Open people.`}
           onOpen={
             canOpen(second.people)
               ? () => onOpen(secondSlot, `${title} · ${secondLabel}`, second)
@@ -146,6 +168,7 @@ function LaneCard({
           value={lane.overall.time}
           meta={peopleLabel(lane.overall.people, countNoun)}
           tone="overall"
+          ariaDetail={`${title} · Overall: ${lane.overall.time}, ${peopleLabel(lane.overall.people, countNoun)}. Open people.`}
           onOpen={
             canOpen(lane.overall.people)
               ? () => onOpen(overallSlot, `${title} · Overall`, lane.overall)
@@ -187,7 +210,6 @@ function slotPageHref(
   slot: PunchCompareSlot,
   scope: { startDate?: string; endDate?: string; teamId?: string; memberId?: string },
 ): string {
-  // Punch cells are person-day punches — open Logs / activity, not Present members (that showed 0).
   const base = {
     startDate: scope.startDate,
     endDate: scope.endDate,
@@ -197,10 +219,21 @@ function slotPageHref(
   if (slotSource(slot) === "tivazo") {
     return tivazoHref({ ...base, view: "members" });
   }
-  if (slotSource(slot) === "bio") {
-    return biomaticHref({ ...base, view: "logs" });
-  }
   return biomaticHref({ ...base, view: "logs" });
+}
+
+function slotHint(slot: PunchCompareSlot, count: number, countNoun: string): string {
+  const label = peopleLabel(count, "people");
+  if (slot.includes("gap")) {
+    return `${label} with both punches · same paired set as Between`;
+  }
+  if (slot.includes("overall")) {
+    return `${label} in the overall median · earliest in / latest confirmed out`;
+  }
+  if (slot.includes("bio")) {
+    return `${label} on Biometrics · same set as the card`;
+  }
+  return `${label} on Tivazo · same set as the card`;
 }
 
 export function DashboardPunchCompare({
@@ -233,37 +266,48 @@ export function DashboardPunchCompare({
   const scope = { startDate, endDate, teamId, memberId };
   const [spec, setSpec] = useState<PeopleModalSpec | null>(null);
 
+  useEffect(() => {
+    setSpec(null);
+  }, [teamId, memberId, startDate, endDate, countNoun, periodLabel]);
+
   const resolvedFocus = useMemo(() => {
     if (focus) return focus;
     if (bio.length || tivazo.length) {
       return buildPunchCompareBundle(bio, tivazo, {
-        period: countNoun === "punches" ? "range" : "day",
+        period: String(periodLabel || "").startsWith("Average") ? "range" : "day",
       }).focus;
     }
     return emptyPunchCompareFocus();
-  }, [focus, bio, tivazo, countNoun]);
+  }, [focus, bio, tivazo, periodLabel]);
 
   const openSlot = (
     slot: PunchCompareSlot,
     title: string,
     moment: PunchMoment | PunchGap,
   ) => {
-    const rows = resolvedFocus[slot] ?? [];
+    const raw = resolvedFocus[slot] ?? [];
+    const rows = uniqueByPerson(raw);
     if (!rows.length) return;
     const count =
-      "people" in moment && typeof moment.people === "number" ? moment.people : rows.length;
-    const noun = countNoun === "punches" ? "punches" : "people";
+      "people" in moment && typeof moment.people === "number" && moment.people > 0
+        ? moment.people
+        : rows.length;
+    const focusKeys = new Set(
+      rows.map((row) => row.email.trim().toLowerCase() || row.id.trim().toLowerCase()).filter(Boolean),
+    );
+    const inFocus = (row: DashboardRosterPerson) => {
+      const key = row.email.trim().toLowerCase() || row.id.trim().toLowerCase();
+      return Boolean(key && focusKeys.has(key));
+    };
     setSpec({
       id: `punch:${slot}`,
       source: slotSource(slot),
       title,
-      hint:
-        countNoun === "punches"
-          ? `${peopleLabel(count, "punches")} in this median · same people as the card`
-          : `${peopleLabel(count, noun)} in this median · same people as the card`,
+      hint: slotHint(slot, count, countNoun),
       focus: rows,
-      bioSnap: bio,
-      tivazoSnap: tivazo,
+      // Freeze the scoped roster slice used for this card (Group/Member/range).
+      bioSnap: bio.filter(inFocus),
+      tivazoSnap: tivazo.filter(inFocus),
       pageHref: slotPageHref(slot, scope),
     });
   };
@@ -273,7 +317,7 @@ export function DashboardPunchCompare({
       <header className="smp-punch-block__head">
         <div>
           <h3 className="smp-punch-block__title">Check-in and check-out</h3>
-
+          <p className="smp-punch-block__sub">Click a card to see the people behind that median</p>
         </div>
       </header>
       <div className="smp-punch-compare">

@@ -7,9 +7,28 @@ import {
   isoDateInZone,
   parseISODate,
 } from "@/lib/datetime";
-import { formatHours, isRestStatus, normalizeDayStatus } from "@/lib/server/metrics";
+import {
+  formatHours,
+  isLeaveStatus,
+  isRestStatus,
+  isWeeklyOffStatus,
+  normalizeDayStatus,
+} from "@/lib/server/metrics";
 import { completedWorkSeconds } from "@/lib/workday-clock";
+import { MotionSection } from "@/components/ui/MotionSection";
 import { useMemo } from "react";
+
+type DayTone = "present" | "absent" | "leave" | "off" | "holiday" | "upcoming";
+
+type DayCell = {
+  date: string;
+  dow: string;
+  dayNum: number;
+  tone: DayTone;
+  label: string;
+  saturday: boolean;
+  today: boolean;
+};
 
 type WindowStats = {
   label: string;
@@ -18,13 +37,60 @@ type WindowStats = {
   end: string;
   presentDays: number;
   absentDays: number;
+  leaveDays: number;
   restDays: number;
+  holidayDays: number;
   upcomingDays: number;
   totalDays: number;
-  workdayCount: number;
   workSeconds: number;
   loading: boolean;
+  days: DayCell[];
+  layout: "week" | "month" | "range";
 };
+
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+type MonthBlock = {
+  key: string;
+  label: string;
+  days: DayCell[];
+  pad: number;
+};
+
+function monthBlocksFromDays(days: DayCell[]): MonthBlock[] {
+  const blocks: MonthBlock[] = [];
+  for (const day of days) {
+    const key = day.date.slice(0, 7);
+    const last = blocks[blocks.length - 1];
+    if (!last || last.key !== key) {
+      const [y, m] = key.split("-").map(Number);
+      blocks.push({
+        key,
+        label: `${MONTH_NAMES[(m || 1) - 1] ?? key} ${y}`,
+        days: [day],
+        pad: 0,
+      });
+    } else {
+      last.days.push(day);
+    }
+  }
+  return blocks;
+}
+
 
 function dayKey(row: DailyLogRow): string {
   return (row.date || row.rawDate || "").slice(0, 10);
@@ -35,28 +101,25 @@ function statusOf(row: DailyLogRow | undefined): string {
   return normalizeDayStatus(row.status || "");
 }
 
+function isHolidayStatus(value: string | undefined | null): boolean {
+  const status = normalizeDayStatus(value);
+  const compact = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+  return status === "Holiday" || compact === "holiday" || compact === "publicholiday";
+}
+
 function rowPresent(row: DailyLogRow | undefined): boolean {
   if (!row) return false;
   const status = statusOf(row);
   if (status === "Present") return true;
   if (status === "Half day" || status === "Leave" || status === "Absent") return false;
   if (status && isRestStatus(row.status || "")) return false;
-  // Empty status: a first punch still counts as present for salary-safe day tallies.
+  if (isHolidayStatus(row.status)) return false;
   return Boolean(String(row.inTime || "").trim());
 }
 
-function rowRest(row: DailyLogRow | undefined): boolean {
-  if (!row) return false;
-  return isRestStatus(row.status || "");
-}
-
-
-
-/**
- * Resolve the single panel window from the dashboard date filter.
- * Prefer explicit start/end; fall back to a single anchor/today day.
- * Never invent a parallel week+month pair.
- */
 function filterWindow(
   startDate: string | undefined,
   endDate: string | undefined,
@@ -70,8 +133,6 @@ function filterWindow(
   let start = "";
   let end = "";
 
-  // Keep the full filter window (incl. future days in week/month presets).
-  // summarizeWindow skips day > today so future ≠ absent in salary stats.
   if (startRaw && endRaw) {
     start = startRaw;
     end = endRaw;
@@ -103,6 +164,23 @@ function filterWindow(
   return { start, end, label };
 }
 
+function utcWeekday(iso: string): number {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay();
+}
+
+function dowOf(iso: string): string {
+  return DOW[utcWeekday(iso)] ?? "";
+}
+
+function dayNumOf(iso: string): number {
+  return Number(iso.slice(8, 10)) || 0;
+}
+
+function isSaturday(iso: string): boolean {
+  return utcWeekday(iso) === 6;
+}
+
 function summarizeWindow(
   label: string,
   start: string,
@@ -111,6 +189,7 @@ function summarizeWindow(
   tivazo: DailyLogRow[],
   loading: boolean,
   today: string,
+  source: "all" | "bio" | "tivazo" = "all",
 ): WindowStats {
   const bioByDay = new Map<string, DailyLogRow>();
   const tivByDay = new Map<string, DailyLogRow>();
@@ -125,44 +204,84 @@ function summarizeWindow(
 
   let presentDays = 0;
   let absentDays = 0;
+  let leaveDays = 0;
   let restDays = 0;
+  let holidayDays = 0;
   let upcomingDays = 0;
   let workSeconds = 0;
   const allDays = enumerateDaysISO(start, end);
-  const totalDays = allDays.length;
+  const dayCells: DayCell[] = [];
 
-  // Every calendar day in the filter counts — including weekends.
-  // Future days are Upcoming (not Absent). Present wins over rest on the other source.
   for (const day of allDays) {
+    const base = {
+      date: day,
+      dow: dowOf(day),
+      dayNum: dayNumOf(day),
+      saturday: isSaturday(day),
+      today: day === today,
+    };
+
     if (day > today) {
       upcomingDays += 1;
+      dayCells.push({ ...base, tone: "upcoming", label: "Upcoming" });
       continue;
     }
+
     const bioRow = bioByDay.get(day);
     const tivRow = tivByDay.get(day);
-    const present = rowPresent(bioRow) || rowPresent(tivRow);
-    if (present) {
+
+    const bioIsPresent = rowPresent(bioRow);
+    const tivIsPresent = rowPresent(tivRow);
+    const isPresent =
+      source === "bio" ? bioIsPresent : source === "tivazo" ? tivIsPresent : bioIsPresent || tivIsPresent;
+    if (isPresent) {
       presentDays += 1;
       const seconds = completedWorkSeconds({
-        tracked: tivRow?.trackedTime,
-        trackedAlt: bioRow?.trackedTime,
-        inTime: tivRow?.inTime,
-        outTime: tivRow?.outTime,
-        inTimeAlt: bioRow?.inTime,
-        outTimeAlt: bioRow?.outTime,
+        tracked: source === "bio" ? bioRow?.trackedTime : tivRow?.trackedTime,
+        trackedAlt: source === "tivazo" ? undefined : bioRow?.trackedTime,
+        inTime: source === "bio" ? bioRow?.inTime : tivRow?.inTime,
+        outTime: source === "bio" ? bioRow?.outTime : tivRow?.outTime,
+        inTimeAlt: source === "all" ? bioRow?.inTime : undefined,
+        outTimeAlt: source === "all" ? bioRow?.outTime : undefined,
       });
       if (seconds != null && seconds > 0) workSeconds += seconds;
+      dayCells.push({ ...base, tone: "present", label: "Present" });
       continue;
     }
 
-    if (rowRest(bioRow) || rowRest(tivRow)) {
+    // Leave / Off / Holiday: still visible from either source (status calendar), even when
+    // punch Source is Bio- or Tivazo-only — only Present is source-gated above.
+    if (isLeaveStatus(bioRow?.status) || isLeaveStatus(tivRow?.status)) {
+      leaveDays += 1;
+      dayCells.push({ ...base, tone: "leave", label: "Leave" });
+      continue;
+    }
+
+    if (isHolidayStatus(bioRow?.status) || isHolidayStatus(tivRow?.status)) {
+      holidayDays += 1;
+      dayCells.push({ ...base, tone: "holiday", label: "Holiday" });
+      continue;
+    }
+
+    if (isWeeklyOffStatus(bioRow?.status) || isWeeklyOffStatus(tivRow?.status)) {
       restDays += 1;
+      dayCells.push({ ...base, tone: "off", label: "Week off" });
       continue;
     }
 
-    // Not Present and not Rest (including weekends with no row) → absent.
+    if (isRestStatus(bioRow?.status) || isRestStatus(tivRow?.status)) {
+      restDays += 1;
+      dayCells.push({ ...base, tone: "off", label: "Week off" });
+      continue;
+    }
+
     absentDays += 1;
+    dayCells.push({ ...base, tone: "absent", label: "Absent" });
   }
+
+  const span = allDays.length;
+  const layout: WindowStats["layout"] =
+    span <= 8 ? "week" : span <= 31 ? "month" : "range";
 
   return {
     label,
@@ -174,12 +293,15 @@ function summarizeWindow(
     end,
     presentDays,
     absentDays,
+    leaveDays,
     restDays,
+    holidayDays,
     upcomingDays,
-    totalDays,
-    workdayCount: presentDays + absentDays,
+    totalDays: allDays.length,
     workSeconds,
     loading,
+    days: dayCells,
+    layout,
   };
 }
 
@@ -215,85 +337,34 @@ function StatCard({
   label: string;
   value: string;
   hint: string;
-  tone?: "present" | "hours" | "absent" | "rest" | "upcoming";
+  tone?: "present" | "hours" | "absent" | "rest" | "leave" | "holiday" | "upcoming";
 }) {
   return (
     <article className="smp-member-period__stat" data-tone={tone}>
-      <p className="smp-member-period__stat-label">{label}</p>
+      <div className="smp-member-period__stat-copy">
+        <p className="smp-member-period__stat-label">{label}</p>
+        <p className="smp-member-period__stat-hint">{hint}</p>
+      </div>
       <p className="smp-member-period__stat-value">{value}</p>
-      <p className="smp-member-period__stat-hint">{hint}</p>
     </article>
   );
 }
 
-function PeriodPanel({ stats }: { stats: WindowStats }) {
-  const accounted =
-    stats.presentDays + stats.absentDays + stats.restDays + stats.upcomingDays;
+function RhythmLegend({
+  showLeave,
+  showHoliday,
+}: {
+  showLeave: boolean;
+  showHoliday: boolean;
+}) {
   return (
-    <section className="smp-member-period__panel" aria-label={stats.label}>
-      <header className="smp-member-period__panel-head">
-        <div>
-          <h3 className="smp-member-period__panel-title">{stats.label}</h3>
-          <p className="smp-member-period__panel-meta">{stats.rangeLabel}</p>
-        </div>
-        {stats.loading ? (
-          <span className="smp-member-period__loading">Updating…</span>
-        ) : (
-          <span className="smp-member-period__panel-meta">
-            {stats.presentDays} present · {stats.absentDays} absent
-            {stats.restDays ? ` · ${stats.restDays} off` : ""}
-            {stats.upcomingDays ? ` · ${stats.upcomingDays} upcoming` : ""}
-            {` = ${accounted}/${stats.totalDays} days`}
-          </span>
-        )}
-      </header>
-      <div className="smp-member-period__stats" data-rich="true">
-        <StatCard
-          label="Present"
-          value={stats.loading ? "—" : String(stats.presentDays)}
-          hint="Status Present (Bio or Tivazo)"
-          tone="present"
-        />
-        <StatCard
-          label="Work hours"
-          value={
-            stats.loading
-              ? "—"
-              : stats.presentDays > 0 && stats.workSeconds <= 0
-                ? "—"
-                : formatHours(stats.workSeconds)
-          }
-          hint={
-            stats.presentDays > 0 && stats.workSeconds <= 0
-              ? "Still in or no completed out yet"
-              : "Tracked / in→out across Present days"
-          }
-          tone="hours"
-        />
-        <StatCard
-          label="Absent"
-          value={stats.loading ? "—" : String(stats.absentDays)}
-          hint="Past/today not Present"
-          tone="absent"
-        />
-        {stats.restDays > 0 ? (
-          <StatCard
-            label="Off"
-            value={stats.loading ? "—" : String(stats.restDays)}
-            hint="Weekly off / rest"
-            tone="rest"
-          />
-        ) : null}
-        {stats.upcomingDays > 0 ? (
-          <StatCard
-            label="Upcoming"
-            value={stats.loading ? "—" : String(stats.upcomingDays)}
-            hint="After today · not absent"
-            tone="upcoming"
-          />
-        ) : null}
-      </div>
-    </section>
+    <ul className="smp-member-period__legend" aria-label="Status legend">
+      <li data-tone="present">Present</li>
+      <li data-tone="absent">Absent</li>
+      {showLeave ? <li data-tone="leave">Leave</li> : null}
+      <li data-tone="off">Week off</li>
+      {showHoliday ? <li data-tone="holiday">Holiday</li> : null}
+    </ul>
   );
 }
 
@@ -303,15 +374,16 @@ export function DashboardMemberPeriodStats({
   startDate,
   endDate,
   anchorDate,
+  source = "all",
 }: {
   memberId: string;
   memberLabel?: string;
-  /** Dashboard filter start (ISO). Prefer over week/month dual panels. */
   startDate?: string;
-  /** Dashboard filter end (ISO). */
   endDate?: string;
   /** @deprecated Prefer startDate/endDate from the overview filter. */
   anchorDate?: string;
+  /** Punch Source: Bio / Tivazo / Combined — gates Present only. */
+  source?: "all" | "bio" | "tivazo";
 }) {
   const today = isoDateInZone();
   const window = useMemo(
@@ -331,30 +403,219 @@ export function DashboardMemberPeriodStats({
         logs.tivazo,
         logs.loading,
         today,
+        source,
       ),
-    [window.label, window.start, window.end, logs.bio, logs.tivazo, logs.loading, today],
+    [window.label, window.start, window.end, logs.bio, logs.tivazo, logs.loading, today, source],
   );
+
+  const monthBlocks = useMemo(() => {
+    const blocks = monthBlocksFromDays(stats.days);
+    return blocks.map((block) => ({
+      ...block,
+      pad: block.days.length ? utcWeekday(block.days[0].date) : 0,
+    }));
+  }, [stats.days]);
 
   if (!memberId) return null;
 
+  const showCalendar = stats.days.length >= 1;
+  const isWeek = stats.layout === "week";
+  const isStacked = !isWeek && monthBlocks.length > 1;
+  const isMonth = !isWeek && monthBlocks.length === 1;
+  const calendarLayout = isWeek ? "week" : isStacked ? "stacked" : "month";
+  const density = isStacked ? "compact" : "comfortable";
+  const statCount =
+    4 +
+    (stats.leaveDays > 0 ? 1 : 0) +
+    (stats.holidayDays > 0 ? 1 : 0) +
+    (stats.upcomingDays > 0 ? 1 : 0);
+
+  const renderDayCell = (day: DayCell, opts?: { showDow?: boolean }) => (
+    <div
+      key={day.date}
+      role="listitem"
+      className="smp-member-period__rhythm-cell"
+      data-tone={day.tone}
+      data-weekend={day.saturday ? "true" : undefined}
+      data-today={day.today ? "true" : undefined}
+      title={`${day.date} · ${day.label}`}
+      aria-label={`${day.dow} ${day.dayNum}, ${day.label}`}
+    >
+      {opts?.showDow ? (
+        <span className="smp-member-period__rhythm-dow">{day.dow}</span>
+      ) : null}
+      <span className="smp-member-period__rhythm-date">{day.dayNum}</span>
+      <span className="smp-member-period__rhythm-label">{day.label}</span>
+    </div>
+  );
+
   return (
-    <section
-      className="smp-panel smp-dashboard-panel smp-member-period"
-      data-single="true"
-      aria-label={stats.label}
+    <MotionSection
+      as="section"
+      className="smp-panel smp-dashboard-panel smp-member-period smp-member-period--single smp-member-period--calendar"
+      aria-label={`Attendance rhythm · ${stats.label}`}
+      delay={0.04}
     >
       <header className="smp-member-period__head">
-        <div>
+        <div className="smp-member-period__heading">
           <p className="smp-member-period__eyebrow">Attendance rhythm</p>
           <h2 className="smp-member-period__title">{stats.label}</h2>
           <p className="smp-member-period__meta">
-            {[memberLabel, "Every day in the range accounted for"].filter(Boolean).join(" · ")}
+            <span className="smp-member-period__member">{memberLabel || "Selected member"}</span>
+            <span className="smp-member-period__dot" aria-hidden="true">
+              ·
+            </span>
+            <span>{stats.rangeLabel}</span>
+            {stats.loading ? (
+              <>
+                <span className="smp-member-period__dot" aria-hidden="true">
+                  ·
+                </span>
+                <span>Updating…</span>
+              </>
+            ) : null}
           </p>
         </div>
+        <RhythmLegend showLeave={stats.leaveDays > 0} showHoliday={stats.holidayDays > 0} />
       </header>
-      <div className="smp-member-period__grid" data-single="true">
-        <PeriodPanel stats={stats} />
+
+      {showCalendar ? (
+        <div
+          className="smp-member-period__calendar"
+          data-layout={calendarLayout}
+          data-density={density}
+          aria-label={`${stats.label} calendar`}
+        >
+          {isWeek ? (
+            <div
+              className="smp-member-period__rhythm"
+              data-layout="week"
+              role="list"
+              style={{ ["--rhythm-cols" as string]: String(Math.max(stats.days.length, 1)) }}
+            >
+              {stats.days.map((day) => renderDayCell(day, { showDow: true }))}
+            </div>
+          ) : null}
+
+          {isMonth
+            ? monthBlocks.map((block) => (
+                <div key={block.key} className="smp-member-period__month" data-density={density}>
+                  <div className="smp-member-period__weekday-row" aria-hidden="true">
+                    {DOW.map((d) => (
+                      <span key={d}>{d}</span>
+                    ))}
+                  </div>
+                  <div className="smp-member-period__rhythm" data-layout="month" role="list">
+                    {Array.from({ length: block.pad }, (_, i) => (
+                      <div
+                        key={`pad-${block.key}-${i}`}
+                        className="smp-member-period__rhythm-cell"
+                        data-tone="pad"
+                        aria-hidden="true"
+                      />
+                    ))}
+                    {block.days.map((day) => renderDayCell(day))}
+                  </div>
+                </div>
+              ))
+            : null}
+
+          {isStacked ? (
+            <div className="smp-member-period__months" role="list">
+              {monthBlocks.map((block) => (
+                <article
+                  key={block.key}
+                  className="smp-member-period__month"
+                  data-density={density}
+                  role="listitem"
+                  aria-label={block.label}
+                >
+                  <header className="smp-member-period__month-head">
+                    <h3 className="smp-member-period__month-title">{block.label}</h3>
+                  </header>
+                  <div className="smp-member-period__weekday-row" aria-hidden="true">
+                    {DOW.map((d) => (
+                      <span key={d}>{d}</span>
+                    ))}
+                  </div>
+                  <div className="smp-member-period__rhythm" data-layout="month" role="list">
+                    {Array.from({ length: block.pad }, (_, i) => (
+                      <div
+                        key={`pad-${block.key}-${i}`}
+                        className="smp-member-period__rhythm-cell"
+                        data-tone="pad"
+                        aria-hidden="true"
+                      />
+                    ))}
+                    {block.days.map((day) => renderDayCell(day))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="smp-member-period__stats" data-count={String(statCount)}>
+        <StatCard
+          label="Present"
+          value={stats.loading ? "—" : String(stats.presentDays)}
+          hint="Days marked Present"
+          tone="present"
+        />
+        <StatCard
+          label="Work hours"
+          value={
+            stats.loading
+              ? "—"
+              : stats.presentDays > 0 && stats.workSeconds <= 0
+                ? "—"
+                : formatHours(stats.workSeconds)
+          }
+          hint={
+            stats.presentDays > 0 && stats.workSeconds <= 0
+              ? "Still in / no out yet"
+              : "Across Present days"
+          }
+          tone="hours"
+        />
+        <StatCard
+          label="Absent"
+          value={stats.loading ? "—" : String(stats.absentDays)}
+          hint="Past days not Present"
+          tone="absent"
+        />
+        <StatCard
+          label="Week off"
+          value={stats.loading ? "—" : String(stats.restDays)}
+          hint="Weekly off / rest"
+          tone="rest"
+        />
+        {stats.leaveDays > 0 ? (
+          <StatCard
+            label="Leave"
+            value={stats.loading ? "—" : String(stats.leaveDays)}
+            hint="On leave"
+            tone="leave"
+          />
+        ) : null}
+        {stats.holidayDays > 0 ? (
+          <StatCard
+            label="Holiday"
+            value={stats.loading ? "—" : String(stats.holidayDays)}
+            hint="Public holiday"
+            tone="holiday"
+          />
+        ) : null}
+        {stats.upcomingDays > 0 ? (
+          <StatCard
+            label="Upcoming"
+            value={stats.loading ? "—" : String(stats.upcomingDays)}
+            hint="After today"
+            tone="upcoming"
+          />
+        ) : null}
       </div>
-    </section>
+    </MotionSection>
   );
 }

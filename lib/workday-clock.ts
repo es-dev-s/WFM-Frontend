@@ -636,15 +636,30 @@ export function peopleForFocus(
 ): WorkdayPerson[] {
   const present = people.filter((person) => workdayPresentOn(person, source));
   if (focus === "present") return present;
-  if (focus === "on-time") return present.filter((person) => person.arrival === "on-time");
-  if (focus === "late") return present.filter((person) => person.arrival === "late");
+  if (focus === "on-time") {
+    return present.filter((person) => {
+      const arrival = source === "bio" ? person.bioArrival : source === "tivazo" ? person.tivazoArrival : person.arrival;
+      return arrival === "on-time";
+    });
+  }
+  if (focus === "late") {
+    return present.filter((person) => {
+      const arrival = source === "bio" ? person.bioArrival : source === "tivazo" ? person.tivazoArrival : person.arrival;
+      return arrival === "late";
+    });
+  }
   if (focus === "early") {
-    return present.filter((person) => person.departure === "early");
+    return present.filter((person) => {
+      const departure = source === "bio" ? person.bioDeparture : source === "tivazo" ? person.tivazoDeparture : person.departure;
+      return departure === "early";
+    });
   }
   if (focus === "full-day") {
-    return present.filter(
-      (person) => person.arrival === "on-time" && person.departure === "on-time",
-    );
+    return present.filter((person) => {
+      const arrival = source === "bio" ? person.bioArrival : source === "tivazo" ? person.tivazoArrival : person.arrival;
+      const departure = source === "bio" ? person.bioDeparture : source === "tivazo" ? person.tivazoDeparture : person.departure;
+      return arrival === "on-time" && departure === "on-time";
+    });
   }
   return people.filter((person) => {
     const value = focus.kind === "in" ? person.inMinutes : person.outMinutes;

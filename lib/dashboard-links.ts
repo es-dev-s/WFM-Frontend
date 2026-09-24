@@ -92,6 +92,8 @@ export type PairedPerson = {
   name: string;
   email: string;
   team: string;
+  /** ISO day when the focus row is a person-day (range KPI chips). */
+  date?: string;
   bio?: DashboardRosterPerson;
   tivazo?: DashboardRosterPerson;
 };
@@ -102,24 +104,36 @@ export function pairRosterPeople(
   tivazo: DashboardRosterPerson[],
 ): PairedPerson[] {
   const index = createIdentityIndex([...focus, ...bio, ...tivazo].map(asIdentity));
+  const dayOf = (row: DashboardRosterPerson) => String(row.date || "").trim().slice(0, 10);
   const bioByKey = new Map<string, DashboardRosterPerson>();
   const tivazoByKey = new Map<string, DashboardRosterPerson>();
-  for (const row of bio) {
-    const key = identityCanonical(index, asIdentity(row));
-    if (key) bioByKey.set(key, row);
-  }
-  for (const row of tivazo) {
-    const key = identityCanonical(index, asIdentity(row));
-    if (key) tivazoByKey.set(key, row);
-  }
+  const put = (map: Map<string, DashboardRosterPerson>, row: DashboardRosterPerson) => {
+    const who = identityCanonical(index, asIdentity(row));
+    if (!who) return;
+    const day = dayOf(row);
+    map.set(day ? `${who}|${day}` : who, row);
+    // Also index without day so undated focus can still resolve.
+    if (day && !map.has(who)) map.set(who, row);
+  };
+  for (const row of bio) put(bioByKey, row);
+  for (const row of tivazo) put(tivazoByKey, row);
   const seen = new Set<string>();
   const out: PairedPerson[] = [];
   for (const row of focus) {
-    const key = identityCanonical(index, asIdentity(row)) || row.email.trim().toLowerCase() || row.id || row.name;
-    if (!key || seen.has(key)) continue;
+    const who = identityCanonical(index, asIdentity(row)) || row.email.trim().toLowerCase() || row.id || row.name;
+    if (!who) continue;
+    const day = dayOf(row);
+    const key = day ? `${who}|${day}` : who;
+    if (seen.has(key)) continue;
     seen.add(key);
-    const bioRow = bioByKey.get(key) || (row.source === "bio" ? row : undefined);
-    const tivazoRow = tivazoByKey.get(key) || (row.source === "tivazo" ? row : undefined);
+    const bioRow =
+      (day ? bioByKey.get(`${who}|${day}`) : undefined) ||
+      bioByKey.get(who) ||
+      (row.source === "bio" ? row : undefined);
+    const tivazoRow =
+      (day ? tivazoByKey.get(`${who}|${day}`) : undefined) ||
+      tivazoByKey.get(who) ||
+      (row.source === "tivazo" ? row : undefined);
     out.push({
       key,
       name: row.name || bioRow?.name || tivazoRow?.name || "Unknown",
@@ -129,9 +143,14 @@ export function pairRosterPeople(
         bioRow?.teams.find((value) => value && value !== "unassigned") ||
         tivazoRow?.teams.find((value) => value && value !== "unassigned") ||
         "",
+      date: day || undefined,
       bio: bioRow,
       tivazo: tivazoRow,
     });
   }
-  return out.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  return out.sort((left, right) => {
+    const byName = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+    if (byName) return byName;
+    return (left.date || "").localeCompare(right.date || "");
+  });
 }

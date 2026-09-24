@@ -9,6 +9,7 @@ import {
 import { QueryState } from "@/components/data/QueryState";
 import { StatusPill } from "@/components/data/StatusPill";
 import type { DailyLogRow } from "@/lib/api";
+import { workdayTimeMetrics } from "@/lib/tracked-time";
 import { ChevronLeft, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 
@@ -143,17 +144,26 @@ export function TivazoInspector({
                             <span aria-hidden="true"> – </span>
                             {row.outTime}
                           </span>
-                          <span className="smp-inspector__sub">
-                            {row.employeeId &&
-                            !/^[0-9a-f-]{36}$/i.test(row.employeeId)
-                              ? row.employeeId
-                              : "—"}
-                            {row.group &&
-                            row.group !== "—" &&
-                            !/^[0-9a-f-]{36}$/i.test(row.group)
-                              ? ` · ${row.group}`
-                              : ""}
-                          </span>
+                          {(() => {
+                            const m = workdayTimeMetrics({
+                              source: "tivazo",
+                              trackedTime: row.trackedTime,
+                              inTime: row.inTime,
+                              outTime: row.outTime,
+                            });
+                            return (
+                              <span className="smp-inspector__sub">
+                                {m.trackedLabel !== "—"
+                                  ? `Tracked ${m.trackedLabel}`
+                                  : "Tracked —"}
+                                {m.trackedLabel !== "—"
+                                  ? m.met
+                                    ? " · Met"
+                                    : ` · Short ${m.shortfallLabel}`
+                                  : ""}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </button>
                     </li>

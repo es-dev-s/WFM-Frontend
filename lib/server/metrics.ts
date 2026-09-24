@@ -26,6 +26,15 @@ export function isRestStatus(value: string | undefined | null): boolean {
   return status === "Weekly off" || status === "Leave";
 }
 
+/** True weekly/rest day only — Leave is a distinct status (not Off). */
+export function isWeeklyOffStatus(value: string | undefined | null): boolean {
+  return normalizeDayStatus(value) === "Weekly off";
+}
+
+export function isLeaveStatus(value: string | undefined | null): boolean {
+  return normalizeDayStatus(value) === "Leave";
+}
+
 export function sameDayStatus(value: string | undefined | null, want: string): boolean {
   const left = normalizeDayStatus(value);
   const right = normalizeDayStatus(want);
@@ -35,6 +44,16 @@ export function sameDayStatus(value: string | undefined | null, want: string): b
 /** Matches Biometrics/Tivazo "Present" filters — not Half day, Leave, or in-time alone. */
 export function isPresentAttendance(value: string | undefined | null): boolean {
   return normalizeDayStatus(value) === "Present";
+}
+
+/**
+ * In/Out/Tracked may be shown only for worked day statuses.
+ * Leave / Absent / Weekly off / Holiday must not surface door or tracked times
+ * (Bio often still stores swipes on those days; Tivazo live could bleed punches).
+ */
+export function dayShowsPunches(value: string | undefined | null): boolean {
+  const day = normalizeDayStatus(value);
+  return day === "Present" || day === "Half day";
 }
 
 export function dash(value: string | number | null | undefined): string {
@@ -68,7 +87,11 @@ export function averageHours(totalSeconds: number, people: number): string {
   return formatHours(totalSeconds / people);
 }
 
-/** Normalize upstream tracked durations to seconds (HH:MM:SS, seconds, or hour fractions). */
+/**
+ * Normalize upstream tracked durations to seconds (HH:MM:SS, seconds, or hour fractions).
+ * WARNING: multi-day Σ seconds often exceed 1e5 (e.g. 20×8h = 576000). Those MUST NOT
+ * go through the ms heuristic — use `absoluteTrackedSeconds` for range aggregates.
+ */
 export function trackedSecondsOf(value: unknown): number {
   if (value == null) return 0;
   if (typeof value === "string") {
@@ -90,12 +113,22 @@ export function trackedSecondsOf(value: unknown): number {
     return trackedSecondsOf(n);
   }
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    // Heuristics: ms clocks, fractional hours (0.5 / 8.5), or raw seconds (Tivazo default).
-    if (value > 100_000) return Math.round(value / 1000);
+    // ms durations for a session are typically >= ~1h in ms (3.6e6). Below that,
+    // prefer raw seconds so month Σ door/tracked totals (1e5–2e6) stay correct.
+    // (Previously `> 100_000 → /1000` turned 576000s into 576s → Avg Work Hour "0.0h".)
+    if (value >= 3_600_000) return Math.round(value / 1000);
     if (value < 1) return Math.round(value * 3600);
     if (value <= 48 && !Number.isInteger(value)) return Math.round(value * 3600);
     return Math.round(value);
   }
+  return 0;
+}
+
+/** Absolute seconds for range aggregates (door-sum / Σ tracked) — never apply ms heuristics. */
+export function absoluteTrackedSeconds(value: unknown): number {
+  if (value == null) return 0;
+  if (typeof value === "string") return trackedSecondsOf(value);
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.round(value);
   return 0;
 }
 

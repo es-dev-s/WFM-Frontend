@@ -48,6 +48,7 @@ import type {
 import {
   averageHours,
   averageWorkedHours,
+  absoluteTrackedSeconds,
   trackedSecondsOf,
   asBool,
   asNumber,
@@ -62,6 +63,7 @@ import {
   percent,
   isPresentAttendance,
   isRestStatus,
+  dayShowsPunches,
   normalizeDayStatus,
   sameDayStatus,
   titleStatus,
@@ -266,12 +268,13 @@ function bioLog(raw: JsonMap, record?: JsonMap): DailyLogRow {
   const status = normalizeDayStatus(asString(rec.status) || asString(raw.attendance));
   const department = asString(raw.department);
   const id = asString(raw.id);
-  const trackedLabel =
-    asString(raw.tracked_label) ||
-    formatSecondsLabel(asNumber(rec.tivazo_tracked_time));
-  const manualLabel =
-    asString(raw.manual_label) ||
-    formatSecondsLabel(asNumber(rec.tivazo_manual_time));
+  const showPunches = dayShowsPunches(status);
+  const trackedLabel = showPunches
+    ? asString(raw.tracked_label) || formatSecondsLabel(asNumber(rec.tivazo_tracked_time))
+    : "";
+  const manualLabel = showPunches
+    ? asString(raw.manual_label) || formatSecondsLabel(asNumber(rec.tivazo_manual_time))
+    : "";
   return {
     id: date ? `${id}:${date}` : id,
     date,
@@ -286,14 +289,18 @@ function bioLog(raw: JsonMap, record?: JsonMap): DailyLogRow {
     active: status === "Present" ? "Yes" : "No",
     disabled: "No",
     status,
-    inTime: attendanceIn(rec, raw),
-    outTime: attendanceOut(rec, raw),
+    inTime: showPunches ? attendanceIn(rec, raw) : "",
+    outTime: showPunches ? attendanceOut(rec, raw) : "",
     trackedTime: trackedLabel,
     manualTime: manualLabel,
     breakTime: breakLabel(rec, raw),
     occupancy: status === "Present" ? "100%" : "0%",
-    utilization: utilization(asNumber(rec.tivazo_tracked_time) || asNumber(raw.tracked_seconds)),
-    wtr: utilization(asNumber(rec.tivazo_tracked_time) || asNumber(raw.tracked_seconds)),
+    utilization: showPunches
+      ? utilization(asNumber(rec.tivazo_tracked_time) || asNumber(raw.tracked_seconds))
+      : "0%",
+    wtr: showPunches
+      ? utilization(asNumber(rec.tivazo_tracked_time) || asNumber(raw.tracked_seconds))
+      : "0%",
     memberId: id,
     employeeId: id,
     workspaceId: "",
@@ -539,13 +546,52 @@ function employeesToRangeMembers(employees: JsonMap[], start: string, end: strin
     const presentRecs = recs.filter(
       (rec) => normalizeDayStatus(asString(rec.status) || asString(rec.attendance)) === "Present",
     );
+    // Expected workdays exclude Weekly off / Leave (isRestStatus); Holidays counted absent-side only if not rest.
+    let absentDays = 0;
+    for (const rec of recs) {
+      const status = normalizeDayStatus(asString(rec.status) || asString(rec.attendance));
+      if (status === "Present" || isRestStatus(status)) continue;
+      // Holiday: treat like rest for attendance denominator (not a workday).
+      const compact = status.toLowerCase().replace(/[\s_-]+/g, "");
+      if (compact === "holiday" || compact === "publicholiday") continue;
+      absentDays += 1;
+    }
     const first = presentRecs[0] ?? recs[0];
     const last = presentRecs[presentRecs.length - 1] ?? recs[recs.length - 1];
+    // Sum per-day door spans — never treat first-day in + last-day out as one span.
+    let doorSeconds = 0;
+    let doorDays = 0;
+    let clockSum = 0;
+    let clockSamples = 0;
+    for (const rec of presentRecs) {
+      const inPunch = punchFromClock(attendanceIn(rec, employee));
+      const outPunch = punchFromClock(attendanceOut(rec, employee));
+      if (inPunch) {
+        clockSum += inPunch.hour * 60 + inPunch.minute;
+        clockSamples += 1;
+      }
+      if (!inPunch || !outPunch) continue;
+      const seconds = workSpanSeconds(
+        inPunch.hour * 60 + inPunch.minute,
+        outPunch.hour * 60 + outPunch.minute,
+      );
+      if (seconds <= 0) continue;
+      doorSeconds += seconds;
+      doorDays += 1;
+    }
     return {
       ...employee,
       attendance: presentRecs.length ? "present" : recs.length ? asString(recs[0].status) || "absent" : "absent",
       start_time: attendanceIn(first, employee),
       end_time: attendanceOut(last, employee),
+      present_days: doorDays || (presentRecs.length ? presentRecs.length : undefined),
+      attended_days: presentRecs.length || undefined,
+      absent_days: absentDays || undefined,
+      // Reuse tracked_seconds so client/server avg work-hour can divide by present_days.
+      tracked_seconds: doorSeconds || undefined,
+      tracked_label: doorSeconds ? formatSecondsLabel(doorSeconds) : undefined,
+      clock_in_sum_minutes: clockSamples ? clockSum : undefined,
+      clock_in_samples: clockSamples || undefined,
     };
   });
 }
@@ -560,15 +606,24 @@ function activitiesToRangeMembers(
   for (const member of liveMembers) {
     const id = asString(member.id) || asString(member.email).toLowerCase();
     if (!id) continue;
-    // Reset tracked aggregates — live partial-day seconds must not dilute range averages.
+    // Keep identity/groups from live, but never inherit today's punches into a
+    // historical Absent/Leave day (that showed false In/Out/Tracked in the UI).
     byId.set(id, {
       ...member,
       attendance: "absent",
+      status: "",
+      clocked_in: "",
+      last_screenshot: "",
+      start_time: "",
+      end_time: "",
+      in_time: "",
+      out_time: "",
       tracked_seconds: 0,
       present_days: 0,
       attended_days: 0,
       absent_days: 0,
       tracked_label: "",
+      activity: undefined,
     });
   }
   for (const act of acts) {
@@ -584,6 +639,8 @@ function activitiesToRangeMembers(
         name: asString(act.email) || "Unknown",
         attendance: "absent",
         groups: [],
+        clocked_in: "",
+        last_screenshot: "",
         tracked_seconds: 0,
         present_days: 0,
         attended_days: 0,
@@ -597,16 +654,26 @@ function activitiesToRangeMembers(
       (!dayStatus && (dayTracked > 0 || asNumber(act.clocked_in) > 0));
     if (isPresent) {
       prev.attendance = "present";
-      if (!asString(prev.clocked_in)) prev.clocked_in = clockLabel(asNumber(act.clocked_in));
+      const dayIn = clockLabel(asNumber(act.clocked_in));
       const shot = clockLabel(asNumber(act.last_taken_screenshot));
+      // Day activity wins — do not keep a leftover live punch.
+      if (dayIn) prev.clocked_in = dayIn;
       if (shot) prev.last_screenshot = shot;
       prev.tracked_seconds = asNumber(prev.tracked_seconds) + dayTracked;
       prev.attended_days = asNumber(prev.attended_days) + 1;
       // Denominator for Avg Work Hour: only days that actually contributed tracked time.
       if (dayTracked > 0) prev.present_days = asNumber(prev.present_days) + 1;
       prev.tracked_label = formatSecondsLabel(asNumber(prev.tracked_seconds));
+      const inPunch = punchFromClock(dayIn);
+      if (inPunch) {
+        prev.clock_in_sum_minutes = asNumber(prev.clock_in_sum_minutes) + inPunch.hour * 60 + inPunch.minute;
+        prev.clock_in_samples = asNumber(prev.clock_in_samples) + 1;
+      }
     } else if (!isRestStatus(dayStatus)) {
-      prev.absent_days = asNumber(prev.absent_days) + 1;
+      const compact = dayStatus.toLowerCase().replace(/[\s_-]+/g, "");
+      if (compact !== "holiday" && compact !== "publicholiday") {
+        prev.absent_days = asNumber(prev.absent_days) + 1;
+      }
     }
     byId.set(id, prev);
   }
@@ -792,8 +859,11 @@ function tivazoMemberRow(raw: JsonMap, date: string): DailyLogRow {
   const attendance = normalizeDayStatus(asString(raw.attendance));
   const live = liveForDate(raw, date);
   const id = asString(raw.id);
-  const clockedMs = clockMs(raw.activity) || parseClockLabel(asString(raw.clocked_in), date);
-  const shotMs = screenshotMs(raw.activity);
+  const showPunches = dayShowsPunches(attendance);
+  const clockedMs = showPunches
+    ? clockMs(raw.activity) || parseClockLabel(asString(raw.clocked_in), date)
+    : 0;
+  const shotMs = showPunches ? screenshotMs(raw.activity) : 0;
   return {
     id: date ? `${id}:${date}` : id,
     date,
@@ -808,14 +878,18 @@ function tivazoMemberRow(raw: JsonMap, date: string): DailyLogRow {
     active: live.active,
     disabled: asBool(raw.disabled) ? "Yes" : "No",
     status: attendance,
-    inTime: memberClock(raw.clocked_in) || clockLabel(clockedMs),
-    outTime: memberClock(raw.last_screenshot) || clockLabel(shotMs),
-    trackedTime: asString(raw.tracked_label) || formatSecondsLabel(asNumber(raw.tracked_seconds)),
-    manualTime: asString(raw.manual_label) || formatSecondsLabel(asNumber(raw.manual_seconds)),
+    inTime: showPunches ? memberClock(raw.clocked_in) || clockLabel(clockedMs) : "",
+    outTime: showPunches ? memberClock(raw.last_screenshot) || clockLabel(shotMs) : "",
+    trackedTime: showPunches
+      ? asString(raw.tracked_label) || formatSecondsLabel(asNumber(raw.tracked_seconds))
+      : "",
+    manualTime: showPunches
+      ? asString(raw.manual_label) || formatSecondsLabel(asNumber(raw.manual_seconds))
+      : "",
     breakTime: breakLabel(raw.activity, raw.user, raw),
     occupancy: attendance === "Present" ? "100%" : "0%",
-    utilization: utilization(asNumber(raw.tracked_seconds)),
-    wtr: utilization(asNumber(raw.tracked_seconds)),
+    utilization: showPunches ? utilization(asNumber(raw.tracked_seconds)) : "0%",
+    wtr: showPunches ? utilization(asNumber(raw.tracked_seconds)) : "0%",
     memberId: id,
     employeeId: id,
     workspaceId: asString(raw.workspace_id),
@@ -852,9 +926,14 @@ function activityRow(act: JsonMap, member: JsonMap | undefined, fallbackDate: st
   const memberId = asString(act.memberID) || asString(member?.id);
   const groups = asStringArray(member?.groups);
   const tracked = trackedSecondsOf(act.trackedTime);
-  const present =
+  const dayStatus = normalizeDayStatus(asString(act.status) || asString(act.attendance));
+  // Salary-safe: never promote Leave / Absent / Weekly off to Present just because a punch exists.
+  const hasPunch =
     tracked > 0 || asNumber(act.clocked_in) > 0 || asNumber(act.last_taken_screenshot) > 0;
-  const status = present ? "Present" : "Absent";
+  const status =
+    dayStatus ||
+    (hasPunch ? "Present" : "Absent");
+  const showPunches = dayShowsPunches(status);
   const live = liveForDate(member, date);
   return {
     id: date ? `${memberId}:${date}` : memberId,
@@ -870,19 +949,19 @@ function activityRow(act: JsonMap, member: JsonMap | undefined, fallbackDate: st
     active: live.active,
     disabled: asBool(member?.disabled) ? "Yes" : "No",
     status,
-    inTime: clockLabel(asNumber(act.clocked_in)),
-    outTime: clockLabel(asNumber(act.last_taken_screenshot)),
-    trackedTime: formatSecondsLabel(tracked),
-    manualTime: formatSecondsLabel(asNumber(act.manualTime)),
+    inTime: showPunches ? clockLabel(asNumber(act.clocked_in)) : "",
+    outTime: showPunches ? clockLabel(asNumber(act.last_taken_screenshot)) : "",
+    trackedTime: showPunches ? formatSecondsLabel(tracked) : "",
+    manualTime: showPunches ? formatSecondsLabel(asNumber(act.manualTime)) : "",
     breakTime: breakLabel(act, act.payload, member?.activity, member),
-    occupancy: present ? "100%" : "0%",
-    utilization: utilization(tracked),
-    wtr: utilization(tracked),
+    occupancy: status === "Present" ? "100%" : "0%",
+    utilization: showPunches ? utilization(tracked) : "0%",
+    wtr: showPunches ? utilization(tracked) : "0%",
     memberId,
     employeeId: memberId,
     workspaceId: asString(act.workspaceID) || asString(member?.workspace_id),
-    clockedInMs: asNumber(act.clocked_in),
-    lastScreenshotMs: asNumber(act.last_taken_screenshot),
+    clockedInMs: showPunches ? asNumber(act.clocked_in) : 0,
+    lastScreenshotMs: showPunches ? asNumber(act.last_taken_screenshot) : 0,
     allTimeWorkHour: asNumber((member?.user as JsonMap | undefined)?.allTimeWorkHour),
     screenshotFrequency: asNumber((member?.user as JsonMap | undefined)?.screenshotFrequency),
     lastActiveAt: live.lastActiveAt,
@@ -957,11 +1036,21 @@ function overlayLiveMembers(history: JsonMap[], live: JsonMap[]): JsonMap[] {
       ...prev,
       ...row,
       attendance: livePresent || histPresent ? "present" : asString(row.attendance) || asString(prev.attendance),
-      start_time: asString(row.start_time) || asString(prev.start_time),
-      end_time: asString(row.end_time) || asString(prev.end_time),
-      in_time: asString(row.in_time) || asString(prev.in_time),
-      clocked_in: asString(row.clocked_in) || asString(prev.clocked_in),
-      last_screenshot: asString(row.last_screenshot) || asString(prev.last_screenshot),
+      // Only adopt live punches when live itself is Present — otherwise Absent/Leave
+      // history kept showing today's clocked_in / last_screenshot.
+      start_time: livePresent
+        ? asString(row.start_time) || asString(prev.start_time)
+        : asString(prev.start_time),
+      end_time: livePresent
+        ? asString(row.end_time) || asString(prev.end_time)
+        : asString(prev.end_time),
+      in_time: livePresent ? asString(row.in_time) || asString(prev.in_time) : asString(prev.in_time),
+      clocked_in: livePresent
+        ? asString(row.clocked_in) || asString(prev.clocked_in)
+        : asString(prev.clocked_in),
+      last_screenshot: livePresent
+        ? asString(row.last_screenshot) || asString(prev.last_screenshot)
+        : asString(prev.last_screenshot),
       attendances: prev.attendances,
       groups: asStringArray(row.groups).length ? asStringArray(row.groups) : asStringArray(prev.groups),
       department: asString(row.department) || asString(prev.department),
@@ -969,8 +1058,12 @@ function overlayLiveMembers(history: JsonMap[], live: JsonMap[]): JsonMap[] {
       present_days: asNumber(prev.present_days),
       attended_days: asNumber(prev.attended_days),
       absent_days: asNumber(prev.absent_days),
-      tracked_seconds: Math.max(asNumber(prev.tracked_seconds), asNumber(row.tracked_seconds)),
-      tracked_label: asString(prev.tracked_label) || asString(row.tracked_label),
+      tracked_seconds: livePresent
+        ? Math.max(asNumber(prev.tracked_seconds), asNumber(row.tracked_seconds))
+        : asNumber(prev.tracked_seconds),
+      tracked_label: livePresent
+        ? asString(prev.tracked_label) || asString(row.tracked_label)
+        : asString(prev.tracked_label),
     });
   }
   return [...map.values()];
@@ -1247,7 +1340,9 @@ async function teamMembers(id: string, url: URL, signal?: AbortSignal): Promise<
 
 async function bioRosterForRange(start: string, end: string): Promise<JsonMap[]> {
   const today = todayInAppZone();
-  if (start === end) return cachedBioLive(start, end);
+  // Today-only stays on the live snapshot. Any other window — including a single
+  // past calendar day — must use sealed history / employees for that day.
+  if (start === today && end === today) return cachedBioLive(start, end);
   const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
   if (stored) {
     const logs = await listHistoryLogs("biometrics", start, end, today).catch(() => [] as DailyLogRow[]);
@@ -1632,15 +1727,24 @@ function logsToTivazoMembers(rows: DailyLogRow[], liveMembers: JsonMap[]): JsonM
   for (const member of liveMembers) {
     const id = asString(member.id) || asString(member.email).toLowerCase();
     if (!id) continue;
-    // Reset tracked aggregates — stored day logs are the salary source of truth.
+    // Identity only from live — strip punches so Absent/Leave days cannot show
+    // another day's In/Out/Tracked (Smarika Sep 16–18 bug).
     byId.set(id, {
       ...member,
       attendance: "absent",
+      status: "",
+      clocked_in: "",
+      last_screenshot: "",
+      start_time: "",
+      end_time: "",
+      in_time: "",
+      out_time: "",
       tracked_seconds: 0,
       present_days: 0,
       attended_days: 0,
       absent_days: 0,
       tracked_label: "",
+      activity: undefined,
     });
   }
   for (const row of rows) {
@@ -1656,6 +1760,8 @@ function logsToTivazoMembers(rows: DailyLogRow[], liveMembers: JsonMap[]): JsonM
         groups: row.groups,
         designation: row.designation,
         role: row.role,
+        clocked_in: "",
+        last_screenshot: "",
         tracked_seconds: 0,
         present_days: 0,
         attended_days: 0,
@@ -1668,15 +1774,25 @@ function logsToTivazoMembers(rows: DailyLogRow[], liveMembers: JsonMap[]): JsonM
     const dayStatus = normalizeDayStatus(row.status);
     if (dayStatus === "Present") {
       prev.attendance = "present";
-      if (!asString(prev.clocked_in) && row.inTime) prev.clocked_in = row.inTime;
+      // Prefer this day's stored punches over any leftover live fields.
+      if (row.inTime) prev.clocked_in = row.inTime;
       if (row.outTime) prev.last_screenshot = row.outTime;
       const dayTracked = trackedSecondsOf(row.trackedTime);
       prev.tracked_seconds = asNumber(prev.tracked_seconds) + dayTracked;
       prev.attended_days = asNumber(prev.attended_days) + 1;
       if (dayTracked > 0) prev.present_days = asNumber(prev.present_days) + 1;
       prev.tracked_label = formatSecondsLabel(asNumber(prev.tracked_seconds));
+      const inPunch = punchFromClock(row.inTime);
+      if (inPunch) {
+        prev.clock_in_sum_minutes = asNumber(prev.clock_in_sum_minutes) + inPunch.hour * 60 + inPunch.minute;
+        prev.clock_in_samples = asNumber(prev.clock_in_samples) + 1;
+      }
     } else if (!isRestStatus(dayStatus)) {
-      prev.absent_days = asNumber(prev.absent_days) + 1;
+      // Holiday excluded from expected workdays (same as bio range collapse).
+      const compact = dayStatus.toLowerCase().replace(/[\s_-]+/g, "");
+      if (compact !== "holiday" && compact !== "publicholiday") {
+        prev.absent_days = asNumber(prev.absent_days) + 1;
+      }
     }
     byId.set(id, prev);
   }
@@ -1773,20 +1889,19 @@ async function dailyLogs(url: URL, signal?: AbortSignal) {
   const q = readParam(url, "q");
   const teamId = readParam(url, "teamId", "department");
   const aliases = q ? await lookupPersonAliases(q).catch(() => [q]) : [];
-  const memberScoped = isExactPersonQuery(q, aliases) && start !== end;
+  const memberScoped = isExactPersonQuery(q, aliases);
   const teamKeys =
-    !memberScoped && teamId && teamId !== "all" && start !== end
+    !memberScoped && teamId && teamId !== "all"
       ? await lookupTeamPersonKeys(teamId).catch(() => [])
       : [];
   let rows: DailyLogRow[] | null = null;
   let identityScoped = false;
   if (memberScoped) {
-    const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
-    if (stored) {
+    const histEnd = historyEnd(end, today);
+    if (start <= histEnd) {
       const keys = aliases.length ? aliases : [q];
-      rows = (await listDayLogsForKeys("biometrics", start, historyEnd(end, today), keys)).filter(
-        bioLogInLeadScope,
-      );
+      rows = (await listDayLogsForKeys("biometrics", start, histEnd, keys)).filter(bioLogInLeadScope);
+      identityScoped = true;
       if (end >= today) {
         const liveEmployees = filterMembersForLead(
           await bioEmployeesAll(withDayRange(fetchUrl, today, today), signal),
@@ -1798,14 +1913,12 @@ async function dailyLogs(url: URL, signal?: AbortSignal) {
           today,
         );
       }
-      identityScoped = true;
     }
   } else if (teamKeys.length) {
-    const stored = await rangeIsStored("biometrics", start, end, today).catch(() => false);
-    if (stored) {
-      rows = (await listDayLogsForKeys("biometrics", start, historyEnd(end, today), teamKeys)).filter(
-        bioLogInLeadScope,
-      );
+    const histEnd = historyEnd(end, today);
+    if (start <= histEnd) {
+      rows = (await listDayLogsForKeys("biometrics", start, histEnd, teamKeys)).filter(bioLogInLeadScope);
+      identityScoped = true;
       if (end >= today) {
         const liveEmployees = filterMembersForLead(
           await bioEmployeesAll(withDayRange(fetchUrl, today, today), signal),
@@ -1817,7 +1930,6 @@ async function dailyLogs(url: URL, signal?: AbortSignal) {
           today,
         );
       }
-      identityScoped = true;
     }
   }
   if (!rows) {
@@ -1957,99 +2069,88 @@ function isExactPersonQuery(query: string, aliases: string[]): boolean {
 async function loadTivazoActivityRows(url: URL, _signal?: AbortSignal): Promise<DailyLogRow[]> {
   const { start, end } = dateRange(url);
   const today = todayInAppZone();
-  const liveDay = start === end ? start : today;
-  const [snap, bioByEmail] = await Promise.all([
-    cachedTivazoLive(liveDay, liveDay),
-    settled(bioEmployeeIdsByEmail()),
-  ]);
-
-  const membersById = new Map<string, JsonMap>();
-  const membersByEmail = new Map<string, JsonMap>();
-  const scopedMembers = filterMembersForLead(snap.members, "tivazo");
-  for (const member of scopedMembers) {
-    membersById.set(asString(member.id), member);
-    if (asString(member.email)) membersByEmail.set(asString(member.email).toLowerCase(), member);
-  }
-
-  const catalog = groupNameMap(snap.groups);
-  const employeeIds = bioByEmail.ok ? bioByEmail.value : new Map<string, string>();
   const q = readParam(url, "q");
   const group = readParam(url, "group", "teamId");
   const aliases = q ? await lookupPersonAliases(q).catch(() => [q]) : [];
   const memberScoped = isExactPersonQuery(q, aliases);
   const teamKeys =
-    !memberScoped && group && group !== "all" && start !== end
+    !memberScoped && group && group !== "all"
       ? await lookupTeamPersonKeys(group).catch(() => [])
       : [];
+  const histEnd = historyEnd(end, today);
+  const needsLive = end >= today;
+  const historyOnly = end < today;
 
-  let rows: DailyLogRow[];
+  // Past windows hit Postgres first. Waiting on Tivazo live for a sealed
+  // historical day was taking 10–20s and blanking / glitching the member UI.
+  const employeeIdsTask = settled(bioEmployeeIdsByEmail());
+  let rows: DailyLogRow[] | null = null;
   let identityScoped = false;
-  if (start === end) {
-    if (start === today) {
+  let catalog = groupNameMap([]);
+  let employeeIds = new Map<string, string>();
+
+  if (memberScoped && start <= histEnd) {
+    const keys = aliases.length ? aliases : [q];
+    const saved = (await listDayLogsForKeys("tivazo", start, histEnd, keys))
+      .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+      .filter((row) => rowInLeadScope(row));
+    if (saved.length || historyOnly) {
+      rows = saved;
+      identityScoped = true;
+    }
+  } else if (teamKeys.length && start <= histEnd) {
+    const saved = (await listDayLogsForKeys("tivazo", start, histEnd, teamKeys))
+      .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+      .filter((row) => rowInLeadScope(row));
+    if (saved.length || historyOnly) {
+      rows = saved;
+      identityScoped = true;
+    }
+  } else if (historyOnly || start !== end) {
+    const stored = await rangeIsStored("tivazo", start, end, today).catch(() => false);
+    if (stored || historyOnly) {
+      const logEnd = histEnd < start ? start : histEnd;
+      const saved = (await listHistoryLogs("tivazo", start, logEnd, today).catch(() => [] as DailyLogRow[]))
+        .map((row) => decorateTivazoRow(row, catalog, employeeIds))
+        .filter((row) => rowInLeadScope(row));
+      if (stored || saved.length) rows = saved;
+    }
+  }
+
+  const liveDay = today;
+  let scopedMembers: JsonMap[] = [];
+  const membersById = new Map<string, JsonMap>();
+  const membersByEmail = new Map<string, JsonMap>();
+
+  const needLiveSnap = needsLive || rows == null || (start === today && end === today);
+  if (needLiveSnap) {
+    const [snap, bioByEmail] = await Promise.all([cachedTivazoLive(liveDay, liveDay), employeeIdsTask]);
+    catalog = groupNameMap(snap.groups);
+    employeeIds = bioByEmail.ok ? bioByEmail.value : new Map<string, string>();
+    scopedMembers = filterMembersForLead(snap.members, "tivazo");
+    for (const member of scopedMembers) {
+      membersById.set(asString(member.id), member);
+      if (asString(member.email)) membersByEmail.set(asString(member.email).toLowerCase(), member);
+    }
+    if (rows) rows = rows.map((row) => decorateTivazoRow(row, catalog, employeeIds));
+  } else {
+    const bioByEmail = await employeeIdsTask;
+    employeeIds = bioByEmail.ok ? bioByEmail.value : new Map<string, string>();
+    if (rows) rows = rows.map((row) => decorateTivazoRow(row, catalog, employeeIds));
+  }
+
+  if (rows == null) {
+    if (start === today && end === today) {
       rows = filterTivazoLiveMembers(scopedMembers, url).map((member) =>
         decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds),
       );
     } else {
-      const stored = await rangeIsStored("tivazo", start, end, today).catch(() => false);
-      if (stored) {
-        rows = (await listHistoryLogs("tivazo", start, end, today))
-          .map((row) => decorateTivazoRow(row, catalog, employeeIds))
-          .filter((row) => rowInLeadScope(row))
-          .filter((row) => activityRowMatchesQuery(row, q))
-          .filter((row) => activityRowInGroup(row, group));
-      } else {
-        rows = filterTivazoLiveMembers(scopedMembers, url).map((member) =>
-          decorateTivazoRow(tivazoMemberRow(member, end), catalog, employeeIds),
-        );
-      }
-    }
-  } else {
-    const stored = (memberScoped || teamKeys.length)
-      ? await rangeIsStored("tivazo", start, end, today).catch(() => false)
-      : false;
-    if (memberScoped && stored) {
-      const keys = aliases.length ? aliases : [q];
-      const saved = (await listDayLogsForKeys("tivazo", start, historyEnd(end, today), keys))
-        .map((row) => decorateTivazoRow(row, catalog, employeeIds))
-        .filter((row) => rowInLeadScope(row));
-      rows = overlayDay(
-        saved,
-        end >= today
-          ? scopedMembers
-              .map((member) => decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds))
-              .filter((row) => activityRowMatchesKeys(row, keys))
-          : [],
-        today,
-      );
-      identityScoped = true;
-    } else if (teamKeys.length && stored) {
-      const saved = (await listDayLogsForKeys("tivazo", start, historyEnd(end, today), teamKeys))
-        .map((row) => decorateTivazoRow(row, catalog, employeeIds))
-        .filter((row) => rowInLeadScope(row));
-      rows = overlayDay(
-        saved,
-        end >= today
-          ? scopedMembers
-              .map((member) => decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds))
-              .filter((row) => activityRowMatchesKeys(row, teamKeys))
-          : [],
-        today,
-      );
-      identityScoped = true;
-    } else {
       rows = await activityRowsCache.get(`${start}:${end}:${scopeCacheKey()}`, async () => {
         const rangeStored = await rangeIsStored("tivazo", start, end, today).catch(() => false);
         if (rangeStored) {
-          const saved = (await listHistoryLogs("tivazo", start, end, today))
+          return (await listHistoryLogs("tivazo", start, end, today))
             .map((row) => decorateTivazoRow(row, catalog, employeeIds))
             .filter((row) => rowInLeadScope(row));
-          return overlayDay(
-            saved,
-            end >= today
-              ? scopedMembers.map((member) => decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds))
-              : [],
-            today,
-          );
         }
         const actsPage = await loadTivazoActivitiesRange(start, end);
         return actsPage
@@ -2068,14 +2169,26 @@ async function loadTivazoActivityRows(url: URL, _signal?: AbortSignal): Promise<
           .filter((row) => rowInLeadScope(row));
       });
     }
-    if (q) {
-      rows = rows.filter((row) =>
-        identityScoped ? activityRowMatchesKeys(row, aliases.length ? aliases : [q]) : activityRowMatchesQuery(row, q),
-      );
-    }
-    if (!identityScoped) {
-      rows = rows.filter((row) => activityRowInGroup(row, group));
-    }
+  } else if (needsLive) {
+    const liveRows = scopedMembers.map((member) =>
+      decorateTivazoRow(tivazoMemberRow(member, today), catalog, employeeIds),
+    );
+    const overlay =
+      identityScoped && memberScoped
+        ? liveRows.filter((row) => activityRowMatchesKeys(row, aliases.length ? aliases : [q]))
+        : identityScoped && teamKeys.length
+          ? liveRows.filter((row) => activityRowMatchesKeys(row, teamKeys))
+          : liveRows;
+    rows = overlayDay(rows, overlay, today);
+  }
+
+  if (q) {
+    rows = rows.filter((row) =>
+      identityScoped ? activityRowMatchesKeys(row, aliases.length ? aliases : [q]) : activityRowMatchesQuery(row, q),
+    );
+  }
+  if (!identityScoped) {
+    rows = rows.filter((row) => activityRowInGroup(row, group));
   }
 
   const status = readParam(url, "status");
@@ -2458,17 +2571,33 @@ function bioDoorSpanSeconds(row: JsonMap): number {
   return delta * 60;
 }
 
+/**
+ * Avg Work Hour from roster rows.
+ * Today: mean Present door span (in→out).
+ * Multi-day: Σ(daily work seconds) / present_person_days (absolute seconds, not ms).
+ */
 function averageBioDoorFromMembers(members: JsonMap[]): string {
   let total = 0;
-  let people = 0;
+  let denom = 0;
   for (const row of members) {
     if (normalizeDayStatus(asString(row.attendance)) !== "Present") continue;
+    const days = asNumber(row.present_days) || asNumber(row.attended_days) || 0;
+    const tracked =
+      days > 1
+        ? absoluteTrackedSeconds(row.tracked_seconds) || trackedSecondsOf(row.tracked_label)
+        : trackedSecondsOf(row.tracked_seconds) || trackedSecondsOf(row.tracked_label);
+    // Multi-day range rows: average of per-day spans (tracked_seconds / days), not first→last clocks.
+    if (days > 1 && tracked > 0) {
+      total += tracked;
+      denom += days;
+      continue;
+    }
     const seconds = bioDoorSpanSeconds(row);
     if (seconds <= 0) continue;
     total += seconds;
-    people += 1;
+    denom += 1;
   }
-  return averageWorkedHours(total, people);
+  return averageWorkedHours(total, denom);
 }
 
 function workSpanSeconds(inMinutes: number | null, outMinutes: number | null): number {
@@ -2486,7 +2615,7 @@ function combinedWorkHours(bio: JsonMap[], tivazo: JsonMap[]): string {
   const tivMap = indexMembers(tivazo);
   const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
   let total = 0;
-  let people = 0;
+  let denom = 0;
   for (const key of keys) {
     const bioRow = bioMap.get(key);
     const tivRow = tivMap.get(key);
@@ -2497,6 +2626,30 @@ function combinedWorkHours(bio: JsonMap[], tivazo: JsonMap[]): string {
       ? normalizeDayStatus(asString(tivRow.attendance)) === "Present"
       : false;
     if (!bioPresent && !tivPresent) continue;
+
+    const bioDays = bioRow ? asNumber(bioRow.present_days) || asNumber(bioRow.attended_days) || 0 : 0;
+    const tivDays = tivRow ? asNumber(tivRow.present_days) || asNumber(tivRow.attended_days) || 0 : 0;
+    const bioTracked = bioRow
+      ? bioDays > 1
+        ? absoluteTrackedSeconds(bioRow.tracked_seconds) || trackedSecondsOf(bioRow.tracked_label)
+        : trackedSecondsOf(bioRow.tracked_seconds) || trackedSecondsOf(bioRow.tracked_label)
+      : 0;
+    const tivTracked = tivRow
+      ? tivDays > 1
+        ? absoluteTrackedSeconds(tivRow.tracked_seconds) || trackedSecondsOf(tivRow.tracked_label)
+        : trackedSecondsOf(tivRow.tracked_seconds) || trackedSecondsOf(tivRow.tracked_label)
+      : 0;
+    // Multi-day: prefer Tivazo tracked avg, else Bio summed door / days (not first→last clocks).
+    if (tivPresent && tivDays > 1 && tivTracked > 0) {
+      total += tivTracked;
+      denom += tivDays;
+      continue;
+    }
+    if (bioPresent && bioDays > 1 && bioTracked > 0) {
+      total += bioTracked;
+      denom += bioDays;
+      continue;
+    }
 
     const inBio = punchMinutes(bioRow ? bioFirstPunch(bioRow) : null);
     const inTiv = punchMinutes(tivRow ? tivazoFirstPunch(tivRow) : null);
@@ -2510,28 +2663,53 @@ function combinedWorkHours(bio: JsonMap[], tivazo: JsonMap[]): string {
     const seconds = workSpanSeconds(Math.min(...ins), Math.max(...outs));
     if (seconds <= 0) continue;
     total += seconds;
-    people += 1;
+    denom += 1;
   }
-  return averageWorkedHours(total, people);
+  return averageWorkedHours(total, denom);
 }
 
-/** Combined Avg Clock-in: earliest first punch per person across Bio ∪ Tivazo. */
+/** Combined Avg Clock-in: mean of daily first-ins when range samples exist; else earliest per Present person. */
 function combinedAvgClockIn(bio: JsonMap[], tivazo: JsonMap[]): string {
   const bioMap = indexMembers(bio);
   const tivMap = indexMembers(tivazo);
   const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
+  let sampleSum = 0;
+  let sampleCount = 0;
   const punches: number[] = [];
   for (const key of keys) {
     const bioRow = bioMap.get(key);
     const tivRow = tivMap.get(key);
+    const bioSamples = bioRow ? asNumber(bioRow.clock_in_samples) : 0;
+    const tivSamples = tivRow ? asNumber(tivRow.clock_in_samples) : 0;
+    const bioSum = bioRow ? asNumber(bioRow.clock_in_sum_minutes) : 0;
+    const tivSum = tivRow ? asNumber(tivRow.clock_in_sum_minutes) : 0;
+    if (tivSamples > 1 || bioSamples > 1) {
+      if (tivSamples >= bioSamples && tivSamples > 0) {
+        sampleSum += tivSum;
+        sampleCount += tivSamples;
+      } else if (bioSamples > 0) {
+        sampleSum += bioSum;
+        sampleCount += bioSamples;
+      }
+      continue;
+    }
+    const bioPresent = bioRow
+      ? normalizeDayStatus(asString(bioRow.attendance)) === "Present"
+      : false;
+    const tivPresent = tivRow
+      ? normalizeDayStatus(asString(tivRow.attendance)) === "Present"
+      : false;
+    if (!bioPresent && !tivPresent) continue;
     const inBio = punchMinutes(bioRow ? bioFirstPunch(bioRow) : null);
     const inTiv = punchMinutes(tivRow ? tivazoFirstPunch(tivRow) : null);
     if (inBio == null && inTiv == null) continue;
     if (inBio != null && inTiv != null) punches.push(Math.min(inBio, inTiv));
     else punches.push((inBio ?? inTiv) as number);
   }
-  const avg = meanMinutes(punches);
-  return avg == null ? "—" : formatClockLabel(avg);
+  if (sampleCount > 0) return formatClockLabel(sampleSum / sampleCount);
+  if (!punches.length) return "—";
+  const avg = punches.reduce((sum, value) => sum + value, 0) / punches.length;
+  return formatClockLabel(avg);
 }
 
 function recountTivazo(members: JsonMap[]): TivazoSummary {
@@ -2546,9 +2724,12 @@ function recountTivazo(members: JsonMap[]): TivazoSummary {
     const attendance = normalizeDayStatus(asString(row.attendance));
     if (attendance === "Present") {
       present += 1;
-      const seconds = trackedSecondsOf(row.tracked_seconds) || trackedSecondsOf(row.tracked_label);
-      tracked += seconds;
       const days = asNumber(row.present_days);
+      const seconds =
+        days > 1
+          ? absoluteTrackedSeconds(row.tracked_seconds) || trackedSecondsOf(row.tracked_label)
+          : trackedSecondsOf(row.tracked_seconds) || trackedSecondsOf(row.tracked_label);
+      tracked += seconds;
       // Only count days that contribute tracked time so empty Present rows do not dilute salary averages.
       if (days > 0) presentDays += days;
       else if (seconds > 0) presentDays += 1;
@@ -2979,6 +3160,61 @@ function uniqueAttendance(bio: JsonMap[], tivazo: JsonMap[]): { people: number; 
   return { people: people.size, present };
 }
 
+/**
+ * Day-weighted Avg Attendance when range aggregates exist:
+ *   sum(present_person_days) / sum(expected_workdays)
+ * expected_workdays = attended_days + absent_days (Weekly off / Leave / Holiday excluded).
+ * Combined: per person max(bio, tivazo) present & expected (lower-bound union / richer calendar).
+ * Falls back to unique people Present/Total when no day counts (Today / single-day live roster).
+ */
+function dayWeightedAttendance(bio: JsonMap[], tivazo: JsonMap[]): { rate: string; people: number; present: number } {
+  const index = createIdentityIndex([
+    ...bio.map((row) => ({ email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "bio" as const })),
+    ...tivazo.map((row) => ({ email: asString(row.email), id: asString(row.id), name: asString(row.name), source: "tivazo" as const })),
+  ]);
+  const bioMap = new Map<string, JsonMap>();
+  const tivMap = new Map<string, JsonMap>();
+  for (const row of bio) {
+    const key = identityCanonical(index, { email: asString(row.email), id: asString(row.id), name: asString(row.name) });
+    if (key) bioMap.set(key, row);
+  }
+  for (const row of tivazo) {
+    const key = identityCanonical(index, { email: asString(row.email), id: asString(row.id), name: asString(row.name) });
+    if (key) tivMap.set(key, row);
+  }
+  const keys = new Set([...bioMap.keys(), ...tivMap.keys()]);
+  let presentDays = 0;
+  let expectedDays = 0;
+  let hasDayWeights = false;
+  let presentPeople = 0;
+  for (const key of keys) {
+    const bioRow = bioMap.get(key);
+    const tivRow = tivMap.get(key);
+    const bioAtt = bioRow ? asNumber(bioRow.attended_days) : 0;
+    const bioAbs = bioRow ? asNumber(bioRow.absent_days) : 0;
+    const tivAtt = tivRow ? asNumber(tivRow.attended_days) : 0;
+    const tivAbs = tivRow ? asNumber(tivRow.absent_days) : 0;
+    const bioExpected = bioAtt + bioAbs;
+    const tivExpected = tivAtt + tivAbs;
+    if (bioExpected > 0 || tivExpected > 0) {
+      hasDayWeights = true;
+      presentDays += Math.max(bioAtt, tivAtt);
+      expectedDays += Math.max(bioExpected, tivExpected);
+    }
+    const flagged =
+      (bioRow && isPresentAttendance(asString(bioRow.attendance))) ||
+      (tivRow && isPresentAttendance(asString(tivRow.attendance))) ||
+      bioAtt > 0 ||
+      tivAtt > 0;
+    if (flagged) presentPeople += 1;
+  }
+  if (hasDayWeights && expectedDays > 0) {
+    return { rate: percent(presentDays, expectedDays), people: keys.size, present: presentPeople };
+  }
+  const unique = uniqueAttendance(bio, tivazo);
+  return { rate: percent(unique.present, unique.people), people: unique.people, present: unique.present };
+}
+
 function buildMemberFocus(
   bio: JsonMap[],
   tivazo: JsonMap[],
@@ -2987,6 +3223,8 @@ function buildMemberFocus(
   const tiv = tivazo[0];
   const bioRow = bio[0];
   if (!tiv && !bioRow) return null;
+  const bioPresent = isPresentAttendance(asString(bioRow?.attendance));
+  const tivPresent = isPresentAttendance(asString(tiv?.attendance));
   return {
     name: asString(tiv?.name) || asString(bioRow?.name),
     email: memberEmail(tiv ?? {}) || memberEmail(bioRow ?? {}),
@@ -2994,18 +3232,18 @@ function buildMemberFocus(
     sources: [...(bioRow ? ["Biometrics"] : []), ...(tiv ? ["Tivazo"] : [])],
     biometrics: {
       day: normalizeDayStatus(asString(bioRow?.attendance)),
-      inTime: attendanceIn(undefined, bioRow),
-      outTime: attendanceOut(undefined, bioRow),
+      inTime: bioPresent ? attendanceIn(undefined, bioRow) : "",
+      outTime: bioPresent ? attendanceOut(undefined, bioRow) : "",
       department: teamLabelFrom(asString(bioRow?.department)),
       designation: asString(bioRow?.designation),
       joined: asString(bioRow?.join_date),
     },
     tivazo: {
-      live: liveForDate(tiv ?? {}, todayInAppZone()).userStatus,
+      live: tivPresent ? liveForDate(tiv ?? {}, todayInAppZone()).userStatus : "",
       day: normalizeDayStatus(asString(tiv?.attendance)),
-      inTime: memberClock(tiv?.clocked_in),
-      outTime: memberClock(tiv?.last_screenshot),
-      tracked: asString(tiv?.tracked_label) || "",
+      inTime: tivPresent ? memberClock(tiv?.clocked_in) : "",
+      outTime: tivPresent ? memberClock(tiv?.last_screenshot) : "",
+      tracked: tivPresent ? asString(tiv?.tracked_label) || "" : "",
       group: resolveGroupNames(asStringArray(tiv?.groups), catalog)[0] || "",
       designation: asString(tiv?.designation).trim(),
     },
@@ -3081,6 +3319,30 @@ function rosterPerson(
   const department = asString(raw.department);
   const groups = asStringArray(raw.groups);
   const named = resolveGroupNames(groups, catalog);
+  const attendance = asString(raw.attendance);
+  const presentDays = asNumber(raw.present_days) || asNumber(raw.attended_days) || 0;
+  // Absent/Leave/Weekly off must not surface leftover live punches.
+  const showPunches = dayShowsPunches(attendance) || presentDays > 0;
+  const startTime = showPunches
+    ? attendanceIn(undefined, raw) || memberClock(raw.clocked_in)
+    : "";
+  const endTime = showPunches
+    ? attendanceOut(undefined, raw) || memberClock(raw.last_screenshot)
+    : "";
+  const clockedIn = showPunches ? memberClock(raw.clocked_in) : "";
+  const lastScreenshot = showPunches ? memberClock(raw.last_screenshot) : "";
+  const trackedSeconds = showPunches
+    ? (() => {
+        const days = presentDays;
+        if (days > 1) {
+          return (
+            absoluteTrackedSeconds(raw.tracked_seconds) ||
+            trackedSecondsOf(raw.tracked_label)
+          );
+        }
+        return trackedSecondsOf(raw.tracked_seconds) || trackedSecondsOf(raw.tracked_label);
+      })()
+    : 0;
   return {
     source,
     id: asString(raw.id),
@@ -3095,18 +3357,19 @@ function rosterPerson(
     ]),
     department,
     groups: named.length ? named : groups,
-    attendance: asString(raw.attendance),
+    attendance,
     status: asString(raw.status),
-    startTime: attendanceIn(undefined, raw) || memberClock(raw.clocked_in),
-    endTime: attendanceOut(undefined, raw) || memberClock(raw.last_screenshot),
-    clockedIn: memberClock(raw.clocked_in),
-    lastScreenshot: memberClock(raw.last_screenshot),
-    trackedSeconds:
-      trackedSecondsOf(raw.tracked_seconds) || trackedSecondsOf(raw.tracked_label),
-    trackedLabel: asString(raw.tracked_label),
+    startTime,
+    endTime,
+    clockedIn,
+    lastScreenshot,
+    trackedSeconds,
+    trackedLabel: showPunches ? asString(raw.tracked_label) : "",
     presentDays: asNumber(raw.present_days) || undefined,
     attendedDays: asNumber(raw.attended_days) || undefined,
     absentDays: asNumber(raw.absent_days) || undefined,
+    clockInSumMinutes: showPunches ? asNumber(raw.clock_in_sum_minutes) || undefined : undefined,
+    clockInSamples: showPunches ? asNumber(raw.clock_in_samples) || undefined : undefined,
     designation: asString(raw.designation),
     joinDate: asString(raw.join_date),
   };
@@ -3218,6 +3481,24 @@ function presenceFromLiveMembers(members: JsonMap[], day: string, source: "bio" 
   return finishPresence(map);
 }
 
+
+function presenceFromStoredLogs(logs: DailyLogRow[]): Map<string, PresenceBucket> {
+  const map = new Map<string, { present: number; ins: number[]; outs: number[] }>();
+  for (const row of logs) {
+    const day = asString(row.date) || asString(row.rawDate);
+    if (!day) continue;
+    const punched = normalizeDayStatus(row.status) === "Present";
+    addPresencePunch(
+      map,
+      day,
+      punched,
+      clockLabelMinutes(row.inTime),
+      clockLabelMinutes(row.outTime),
+    );
+  }
+  return finishPresence(map);
+}
+
 function mergePresence(base: Map<string, PresenceBucket>, extra: Map<string, PresenceBucket>) {
   for (const [day, row] of extra) {
     const prev = base.get(day);
@@ -3250,6 +3531,48 @@ function storedToPresence(
   return map;
 }
 
+
+/** Combined presence: unique identity union of Present people per day when raw logs exist. */
+function uniquePresentUnionFromLogs(
+  bioLogs: DailyLogRow[],
+  tivazoLogs: DailyLogRow[],
+): Map<string, PresenceBucket> {
+  const byDay = new Map<string, { keys: Set<string>; ins: number[]; outs: number[] }>();
+  const touch = (row: DailyLogRow) => {
+    if (normalizeDayStatus(row.status) !== "Present") return;
+    const day = asString(row.date) || asString(row.rawDate);
+    if (!day) return;
+    const key = (
+      row.email ||
+      row.memberId ||
+      row.employeeId ||
+      row.name ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+    if (!key) return;
+    const bucket = byDay.get(day) ?? { keys: new Set<string>(), ins: [], outs: [] };
+    bucket.keys.add(key);
+    const inn = clockLabelMinutes(row.inTime);
+    const out = clockLabelMinutes(row.outTime);
+    if (inn != null) bucket.ins.push(inn);
+    if (out != null) bucket.outs.push(out);
+    byDay.set(day, bucket);
+  };
+  for (const row of bioLogs) touch(row);
+  for (const row of tivazoLogs) touch(row);
+  const out = new Map<string, PresenceBucket>();
+  for (const [day, bucket] of byDay) {
+    out.set(day, {
+      present: bucket.keys.size,
+      typicalIn: medianClock(bucket.ins),
+      typicalOut: medianClock(bucket.outs),
+    });
+  }
+  return out;
+}
+
 async function dashboardPresence(url: URL): Promise<{
   start: string;
   end: string;
@@ -3258,34 +3581,118 @@ async function dashboardPresence(url: URL): Promise<{
   const { start, end } = dateRange(url);
   const source = readParam(url, "source");
   const teamId = readParam(url, "teamId", "group", "department");
+  const memberId = readParam(url, "memberId", "member", "q");
   assertTeamAccess(teamId);
   const today = todayInAppZone();
-  // bio | tivazo | all/combined (default). Combined uses both sources and max(count)
-  // as a salary-safe lower bound of unique Present (exact union needs per-person join).
+  // bio | tivazo | all/combined (default). Combined prefers unique person-union when
+  // raw day logs are available (group scope); otherwise max(bio,tivazo) lower bound.
   const wantBio = source !== "tivazo";
   const wantTivazo = source !== "bio";
-  const [bioLogs, tivazoLogs, bioIngest, tivazoIngest] = await Promise.all([
-    wantBio ? presenceByDay("biometrics", start, end, teamId).catch(() => new Map()) : Promise.resolve(new Map()),
-    wantTivazo ? presenceByDay("tivazo", start, end, teamId).catch(() => new Map()) : Promise.resolve(new Map()),
-    wantBio ? ingestedDays("biometrics", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
-    wantTivazo ? ingestedDays("tivazo", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
-  ]);
-  const bio = storedToPresence(bioLogs, bioIngest);
-  const tivazo = storedToPresence(tivazoLogs, tivazoIngest);
-  const span = enumerateDays(start, end).length;
-  const storedHits = enumerateDays(start, end).filter((day) =>
+  const scoped = Boolean(teamId || memberId);
+  const teamKeys =
+    teamId && !memberId ? await lookupTeamPersonKeys(teamId).catch(() => [] as string[]) : [];
+
+  let bio = new Map<string, PresenceBucket>();
+  let tivazo = new Map<string, PresenceBucket>();
+
+  if (memberId) {
+    // Member scope: day-log filter by person needle (no office ingest).
+    const [bioLogs, tivazoLogs] = await Promise.all([
+      wantBio ? presenceByDay("biometrics", start, end, "", memberId).catch(() => new Map()) : Promise.resolve(new Map()),
+      wantTivazo ? presenceByDay("tivazo", start, end, "", memberId).catch(() => new Map()) : Promise.resolve(new Map()),
+    ]);
+    bio = storedToPresence(bioLogs, new Map());
+    tivazo = storedToPresence(tivazoLogs, new Map());
+  } else if (teamKeys.length) {
+    // Group scope: count Present from the same person-key set daily-logs uses.
+    const [bioRows, tivazoRows] = await Promise.all([
+      wantBio
+        ? listDayLogsForKeys("biometrics", start, end, teamKeys).catch(() => [] as DailyLogRow[])
+        : Promise.resolve([] as DailyLogRow[]),
+      wantTivazo
+        ? listDayLogsForKeys("tivazo", start, end, teamKeys).catch(() => [] as DailyLogRow[])
+        : Promise.resolve([] as DailyLogRow[]),
+    ]);
+    bio = presenceFromStoredLogs(bioRows);
+    tivazo = presenceFromStoredLogs(tivazoRows);
+    // Prefer exact Bio∪Tivazo unique people when Combined (both sources requested).
+    if (wantBio && wantTivazo) {
+      const union = uniquePresentUnionFromLogs(bioRows, tivazoRows);
+      for (const [day, row] of union) {
+        bio.set(day, row);
+        tivazo.set(day, row);
+      }
+    }
+  } else if (teamId) {
+    // Fallback group filter when member directory has no keys yet.
+    const [bioLogs, tivazoLogs] = await Promise.all([
+      wantBio ? presenceByDay("biometrics", start, end, teamId, "").catch(() => new Map()) : Promise.resolve(new Map()),
+      wantTivazo ? presenceByDay("tivazo", start, end, teamId, "").catch(() => new Map()) : Promise.resolve(new Map()),
+    ]);
+    bio = storedToPresence(bioLogs, new Map());
+    tivazo = storedToPresence(tivazoLogs, new Map());
+  } else {
+    // All groups / All members — full office series (+ ingest coverage).
+    const [bioLogs, tivazoLogs, bioIngest, tivazoIngest] = await Promise.all([
+      wantBio ? presenceByDay("biometrics", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
+      wantTivazo ? presenceByDay("tivazo", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
+      wantBio ? ingestedDays("biometrics", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
+      wantTivazo ? ingestedDays("tivazo", start, end).catch(() => new Map()) : Promise.resolve(new Map()),
+    ]);
+    bio = storedToPresence(bioLogs, bioIngest);
+    tivazo = storedToPresence(tivazoLogs, tivazoIngest);
+  }
+
+  const lastPast = end < today ? end : today;
+  const pastDays = enumerateDays(start, lastPast < start ? start : lastPast);
+  const storedHits = pastDays.filter((day) =>
     Math.max(bio.get(day)?.present || 0, tivazo.get(day)?.present || 0) > 0,
   ).length;
-  const sparse = span > 7 && storedHits <= Math.max(1, Math.floor(span * 0.08));
+  const coverage = pastDays.length ? storedHits / pastDays.length : 1;
+  const sparse = pastDays.length > 3 && coverage < 0.4;
 
   if (sparse) {
     const [bioEmployees, tivazoActs] = await Promise.all([
       wantBio ? loadBioEmployeesRange(start, end).catch(() => [] as JsonMap[]) : Promise.resolve([] as JsonMap[]),
       wantTivazo ? loadTivazoActivitiesRange(start, end).catch(() => [] as JsonMap[]) : Promise.resolve([] as JsonMap[]),
     ]);
-    if (wantBio) mergePresence(bio, presenceFromBioEmployees(bioEmployees, start, end));
-    if (wantTivazo) mergePresence(tivazo, presenceFromTivazoActivities(tivazoActs, start, end));
-  } else {
+    let bioPool = bioEmployees;
+    let tivazoPool = tivazoActs;
+    if (scoped) {
+      const needleTeam = teamId.trim().toLowerCase();
+      const needleMember = memberId.trim().toLowerCase();
+      const keySet = new Set(teamKeys.map((k) => k.toLowerCase()));
+      const keepPerson = (row: JsonMap) => {
+        if (needleMember) {
+          const hay = [row.id, row.employeeId, row.memberId, row.email, row.name]
+            .map((v) => String(v ?? "").trim().toLowerCase())
+            .filter(Boolean);
+          if (!hay.includes(needleMember) && !hay.some((v) => v.includes(needleMember))) return false;
+        }
+        if (keySet.size) {
+          const hay = [row.id, row.employeeId, row.memberId, row.email, row.name]
+            .map((v) => String(v ?? "").trim().toLowerCase())
+            .filter(Boolean);
+          if (!hay.some((v) => keySet.has(v))) return false;
+        } else if (needleTeam) {
+          const groups = [
+            String(row.department ?? ""),
+            String(row.group ?? ""),
+            ...((row.groups as string[] | undefined) ?? []),
+            ...((row.teams as string[] | undefined) ?? []),
+          ]
+            .map((v) => v.trim().toLowerCase())
+            .filter(Boolean);
+          if (!groups.some((g) => g === needleTeam || g.includes(needleTeam))) return false;
+        }
+        return true;
+      };
+      if (wantBio) bioPool = bioEmployees.filter(keepPerson);
+      if (wantTivazo) tivazoPool = tivazoActs.filter(keepPerson);
+    }
+    if (wantBio) mergePresence(bio, presenceFromBioEmployees(bioPool, start, end));
+    if (wantTivazo) mergePresence(tivazo, presenceFromTivazoActivities(tivazoPool, start, end));
+  } else if (!scoped) {
     void Promise.all([
       wantBio ? ensureStoredRange("biometrics", start, end) : Promise.resolve(false),
       wantTivazo ? ensureStoredRange("tivazo", start, end) : Promise.resolve(false),
@@ -3295,10 +3702,29 @@ async function dashboardPresence(url: URL): Promise<{
   if (end >= today) {
     const [bioLiveMembers, tivazoLive] = await Promise.all([
       wantBio ? cachedBioLive(today, today).catch(() => [] as JsonMap[]) : Promise.resolve([] as JsonMap[]),
-      wantTivazo ? cachedTivazoLive(today, today).catch(() => ({ members: [] as JsonMap[], groups: [] as JsonMap[] })) : Promise.resolve({ members: [] as JsonMap[], groups: [] as JsonMap[] }),
+      wantTivazo
+        ? cachedTivazoLive(today, today).catch(() => ({ members: [] as JsonMap[], groups: [] as JsonMap[] }))
+        : Promise.resolve({ members: [] as JsonMap[], groups: [] as JsonMap[] }),
     ]);
-    if (wantBio) mergePresence(bio, presenceFromLiveMembers(bioLiveMembers, today, "bio"));
-    if (wantTivazo) mergePresence(tivazo, presenceFromLiveMembers(tivazoLive.members, today, "tivazo"));
+    let bioLive = bioLiveMembers;
+    let tivazoLiveMembers = tivazoLive.members;
+    if (memberId) {
+      const needle = memberId.trim().toLowerCase();
+      const keep = (row: JsonMap) => {
+        const hay = [row.id, row.employeeId, row.memberId, row.email, row.name]
+          .map((v) => String(v ?? "").trim().toLowerCase())
+          .filter(Boolean);
+        return hay.includes(needle) || hay.some((v) => v.includes(needle));
+      };
+      bioLive = bioLive.filter(keep);
+      tivazoLiveMembers = tivazoLiveMembers.filter(keep);
+    } else if (teamId) {
+      const catalog = groupNameMap(tivazoLive.groups || []);
+      bioLive = bioLive.filter((row) => matchesBioDepartment(asString(row.department), teamId));
+      tivazoLiveMembers = tivazoLiveMembers.filter((row) => memberInTeam(row, teamId, catalog));
+    }
+    if (wantBio) mergePresence(bio, presenceFromLiveMembers(bioLive, today, "bio"));
+    if (wantTivazo) mergePresence(tivazo, presenceFromLiveMembers(tivazoLiveMembers, today, "tivazo"));
   }
 
   const days = enumerateDays(start, end).map((day) => {
@@ -3306,18 +3732,23 @@ async function dashboardPresence(url: URL): Promise<{
     const tivazoRow = tivazo.get(day);
     const bioCount = bioRow?.present || 0;
     const tivazoCount = tivazoRow?.present || 0;
-    const present =
+    // Combined: when union was applied both maps share the same unique count; else max is lower bound.
+    let present =
       source === "tivazo"
         ? tivazoCount
         : source === "bio"
           ? bioCount
           : Math.max(bioCount, tivazoCount);
+    // Single member → binary Present for the day.
+    if (memberId && present > 0) present = 1;
     const typical =
       source === "tivazo"
         ? tivazoRow
         : source === "bio"
           ? bioRow
-          : (bioCount >= tivazoCount ? bioRow : tivazoRow);
+          : bioCount >= tivazoCount
+            ? bioRow
+            : tivazoRow;
     return {
       day,
       present,
@@ -3327,6 +3758,7 @@ async function dashboardPresence(url: URL): Promise<{
   });
   return { start, end, days };
 }
+
 
 async function dashboardTrend(url: URL, signal?: AbortSignal): Promise<{ trend: TrendPoint[] }> {
   const teamId = readParam(url, "teamId", "group", "department");
@@ -3446,7 +3878,11 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
       ? Promise.resolve(new Map<string, { clockIns: number; tracked: number }>())
       : loadTrendSeries(uniqueTrendGroups, "", today, signal);
 
-  const useHistory = start !== end;
+  // History applies to any window that is not strictly today — including a
+  // single past calendar day. Previously start === end always used today's live
+  // roster, so selecting one day blanked Biometrics for members present then.
+  const isTodayOnly = start === today && end === today;
+  const useHistory = !isTodayOnly;
   const storedHistory = useHistory
     ? await Promise.all([
         rangeIsStored("biometrics", start, end, today).catch(() => false),
@@ -3456,14 +3892,15 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
   const bioStored = storedHistory[0];
   const tivazoStored = storedHistory[1];
   const todayUrl = withDayRange(liveUrl, today, today);
+  const selectedUrl = withDayRange(liveUrl, start, end);
   const todayKey = `${today}:${today}`;
   const peekedBio = bioLiveCache.peek(todayKey) ?? [];
   const peekedTivazo = tivazoLiveCache.peek(todayKey);
   void cachedBioLive(today, today).catch(() => undefined);
   void cachedTivazoLive(today, today).catch(() => undefined);
 
-  const skipLiveWait = useHistory && (bioStored || tivazoStored);
-  const [bioFilters, tivMembers, bioMembers, byDay, historyBio, historyActs, storedBioLogs, storedTivazoLogs] =
+  const skipLiveWait = (useHistory && (bioStored || tivazoStored)) || end < today;
+  const [bioFilters, tivMembers, bioMembers, byDay, historyBio, historyActs, storedBioLogs, storedTivazoLogs, dayScopedBio] =
     await Promise.all([
     skipLiveWait
       ? Promise.resolve({ ok: false as const, error: undefined })
@@ -3484,8 +3921,19 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
     useHistory && !tivazoStored
       ? settled(loadTivazoActivitiesRange(start, end))
       : Promise.resolve({ ok: false as const, error: undefined }),
-    bioStored ? listHistoryLogs("biometrics", start, end, today).catch(() => [] as DailyLogRow[]) : Promise.resolve([] as DailyLogRow[]),
-    tivazoStored ? listHistoryLogs("tivazo", start, end, today).catch(() => [] as DailyLogRow[]) : Promise.resolve([] as DailyLogRow[]),
+    bioStored
+      ? listHistoryLogs("biometrics", start, end, today).catch(() => [] as DailyLogRow[])
+      : end < today
+        ? listHistoryLogs("biometrics", start, end, today).catch(() => [] as DailyLogRow[])
+        : Promise.resolve([] as DailyLogRow[]),
+    tivazoStored
+      ? listHistoryLogs("tivazo", start, end, today).catch(() => [] as DailyLogRow[])
+      : end < today
+        ? listHistoryLogs("tivazo", start, end, today).catch(() => [] as DailyLogRow[])
+        : Promise.resolve([] as DailyLogRow[]),
+    useHistory && start === end && !bioStored
+      ? settled(bioLive(selectedUrl, signal, true))
+      : Promise.resolve({ ok: false as const, error: undefined }),
   ]);
 
   const filterOptions: FilterOptions = skipLiveWait
@@ -3493,24 +3941,34 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
     : bioFilters.ok
       ? bioFilters.value
       : { teams: [], supervisors: [], roles: [], members: [] };
-  const trendByDay = skipLiveWait ? trendMapFromLogs(storedTivazoLogs) : byDay;
+  const trendByDay =
+    skipLiveWait && (storedTivazoLogs.length || end < today)
+      ? trendMapFromLogs(storedTivazoLogs)
+      : byDay;
   let liveTivazo = tivMembers.ok ? tivMembers.value.members : [];
   let liveBio = bioMembers.ok ? bioMembers.value.members : [];
   let rawTivazo = liveTivazo;
   let rawBio = liveBio;
-  if (bioStored && storedBioLogs.length) {
+  if ((bioStored || end < today) && storedBioLogs.length) {
     rawBio = employeesToRangeMembers(logsToBioMembers(storedBioLogs), start, end);
     if (end >= today) rawBio = overlayLiveMembers(rawBio, liveBio);
   } else if (useHistory && historyBio.ok && historyBio.value.length) {
     rawBio = employeesToRangeMembers(historyBio.value, start, end);
     if (end >= today) rawBio = overlayLiveMembers(rawBio, liveBio);
+  } else if (useHistory && dayScopedBio.ok && dayScopedBio.value.members.length) {
+    rawBio = dayScopedBio.value.members;
+  } else if (useHistory && !isTodayOnly) {
+    // Never fall back to today's live roster for a past/single-day view.
+    rawBio = [];
   }
-  if (tivazoStored) {
+  if ((tivazoStored || end < today) && storedTivazoLogs.length) {
     rawTivazo = logsToTivazoMembers(storedTivazoLogs, liveTivazo);
     if (end >= today) rawTivazo = overlayLiveMembers(rawTivazo, liveTivazo);
   } else if (useHistory && historyActs.ok) {
     rawTivazo = activitiesToRangeMembers(historyActs.value, liveTivazo, start, end);
     if (end >= today) rawTivazo = overlayLiveMembers(rawTivazo, liveTivazo);
+  } else if (useHistory && !isTodayOnly) {
+    rawTivazo = [];
   }
   const tivazoTeams = filterOptions.supervisors;
   const bioTeams = filterOptions.teams;
@@ -3528,7 +3986,7 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
   const biomatic = recountBio(visibleBio);
   const tivazo = recountTivazo(visibleTivazo);
   const memberOptions = mergeMemberOptions(joined.bio, joined.tivazo);
-  const unique = uniqueAttendance(visibleBio, visibleTivazo);
+  const unique = dayWeightedAttendance(visibleBio, visibleTivazo);
   const days = enumerateDays(trendWindow.start, trendWindow.end);
   const trend: TrendPoint[] = days.map((day) => {
     const point = trendByDay.get(day);
@@ -3563,7 +4021,7 @@ async function buildDashboardOverview(url: URL, signal?: AbortSignal): Promise<D
       tivazoTeams: tivazoTeams.length,
       biomaticMembers: biomatic.totalMembers,
       tivazoMembers: tivazo.totalMembers,
-      avgAttendance: percent(unique.present, unique.people),
+      avgAttendance: unique.rate,
       avgWorkHours: combinedWorkHours(visibleBio, visibleTivazo),
       avgClockIn: combinedAvgClockIn(punchBio, punchTivazo),
       biomaticPresent: biomatic.presentMembers,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import type { AuthRole } from "@/lib/auth-role";
 import { getCached, peekFresh, queryTtl, setCached } from "@/lib/query-cache";
 
@@ -296,6 +296,10 @@ export type DashboardRosterPerson = {
   attendedDays?: number;
   /** Absent (non-rest) person-days when roster row is range-aggregated. */
   absentDays?: number;
+  /** Sum of first-in minutes across Present days (range aggregate) for day-weighted Avg Clock-in. */
+  clockInSumMinutes?: number;
+  /** Count of Present days that contributed to clockInSumMinutes. */
+  clockInSamples?: number;
   designation: string;
   joinDate: string;
   date?: string;
@@ -587,7 +591,9 @@ export function withQuery(
   params: Record<string, string | number | boolean | undefined | null>,
 ): string {
   const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
+  // Stable key order so identical filters share one cache entry / inflight request.
+  for (const key of Object.keys(params).sort()) {
+    const value = params[key];
     if (value === undefined || value === null || value === "") continue;
     search.set(key, String(value));
   }
@@ -667,18 +673,24 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
   const urlRef = useRef(url);
   const fetchedRef = useRef({ url, epoch: -1 });
   const generationRef = useRef(0);
+  const previousDataRef = useRef<T | null>(state.data);
+
+  if (state.data) previousDataRef.current = state.data;
 
   if (state.url !== url) {
     const next = snapshotState<T>(url);
-    if (next.data || !state.data) {
+    if (next.data) {
       setState(next);
-    } else {
+    } else if (previousDataRef.current) {
+      // Keep last good payload visible while the new range loads (no blank/freeze).
       setState({
         ...next,
-        data: state.data,
+        data: previousDataRef.current,
         loading: false,
         refreshing: true,
       });
+    } else {
+      setState(next);
     }
   } else if (epoch !== seenEpoch) {
     setSeenEpoch(epoch);
@@ -707,7 +719,11 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
       .then((data) => {
         if (generation !== generationRef.current || urlRef.current !== url) return;
         fetchedRef.current = { url, epoch };
-        setState({ url, data, error: null, loading: false, refreshing: false });
+        previousDataRef.current = data;
+        // Defer heavy tree updates so preset clicks stay clickable while data commits.
+        startTransition(() => {
+          setState({ url, data, error: null, loading: false, refreshing: false });
+        });
       })
       .catch((error: unknown) => {
         if (generation !== generationRef.current || urlRef.current !== url || isAbortError(error)) {
@@ -717,13 +733,15 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
           error instanceof ApiError
             ? error
             : new ApiError(0, "unknown", "Something went wrong.");
-        setState((prev) => ({
-          url,
-          data: prev.url === url ? prev.data : getCached<T>(url)?.data ?? null,
-          error: nextError,
-          loading: false,
-          refreshing: false,
-        }));
+        startTransition(() => {
+          setState((prev) => ({
+            url,
+            data: prev.url === url ? prev.data : getCached<T>(url)?.data ?? previousDataRef.current,
+            error: nextError,
+            loading: false,
+            refreshing: false,
+          }));
+        });
       });
   }, [url, epoch]);
 

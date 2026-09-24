@@ -1,6 +1,7 @@
 import { StatusPill } from "@/components/data/StatusPill";
 import type { DailyLogRow, Member, MemberComposition } from "@/lib/api";
 import { formatInstantMs } from "@/lib/datetime";
+import { workdayTimeMetrics } from "@/lib/tracked-time";
 import type { ReactNode } from "react";
 
 export function dash(value: string | number | null | undefined): string {
@@ -32,12 +33,18 @@ export function CellText({
   tone = "primary",
 }: {
   value: string | number | null | undefined;
-  tone?: "primary" | "muted";
+  tone?: "primary" | "muted" | "ok";
 }) {
   const text = dash(value);
+  const className =
+    tone === "muted"
+      ? "smp-cell-text smp-muted"
+      : tone === "ok"
+        ? "smp-cell-text smp-cell-text--ok"
+        : "smp-cell-text";
   return (
     <span
-      className={tone === "muted" ? "smp-cell-text smp-muted" : "smp-cell-text"}
+      className={className}
       title={text === "—" ? undefined : text}
     >
       {text}
@@ -217,16 +224,29 @@ export function activityFactGroups(row: DailyLogRow): FactGroup[] {
     },
     {
       title: "This day",
-      items: [
-        { label: "Date", value: dash(row.date), keep: true },
-        { label: "Day", value: optionalStatus(row.status), keep: true },
-        { label: "In", value: dash(row.inTime), keep: true },
-        { label: "Last screenshot", value: dash(row.outTime), keep: true },
-        { label: "Tracked", value: dash(row.trackedTime), keep: true },
-        { label: "Manual", value: dash(row.manualTime), keep: true },
-        { label: "Break", value: dash(row.breakTime), keep: true },
-        { label: "Clocked in", value: formatInstantMs(row.clockedInMs), keep: true },
-      ],
+      items: (() => {
+        const metrics = workdayTimeMetrics({
+          source: "auto",
+          trackedTime: row.trackedTime,
+          inTime: row.inTime,
+          outTime: row.outTime,
+        });
+        return [
+          { label: "Date", value: dash(row.date), keep: true },
+          { label: "Day", value: optionalStatus(row.status), keep: true },
+          { label: "In", value: dash(row.inTime), keep: true },
+          { label: "Out", value: dash(row.outTime), keep: true },
+          { label: "Tracked", value: metrics.trackedLabel, keep: true },
+          {
+            label: "Shortfall",
+            value: metrics.shortfallLabel,
+            keep: true,
+          },
+          { label: "Manual", value: dash(row.manualTime), keep: true },
+          { label: "Break", value: dash(row.breakTime), keep: true },
+          { label: "Clocked in", value: formatInstantMs(row.clockedInMs), keep: true },
+        ];
+      })(),
     },
     {
       title: "Account",

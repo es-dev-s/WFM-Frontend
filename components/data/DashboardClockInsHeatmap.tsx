@@ -15,7 +15,6 @@ import {
 } from "@/lib/datetime";
 import {
   formatMinutes,
-  presenceHeatLevel,
   sourcePunchMinutes,
   uniqueWorkdayPeople,
   workdayPresentOn,
@@ -24,10 +23,10 @@ import {
 import { useCallback, useMemo } from "react";
 
 const ACCENTS = {
-  // Soft GitHub-like ramps — empty cell matches surface, peaks stay readable not neon.
-  all: ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"],
-  bio: ["#ebedf0", "#fbd38d", "#f6ad55", "#ed8936", "#c05621"],
-  tivazo: ["#ebedf0", "#bfdbfe", "#60a5fa", "#3b82f6", "#1d4ed8"],
+  // Calm Apple-adjacent ramps — empty sits on surface, peaks stay readable not neon.
+  all: ["#e8edf2", "#b7e0c2", "#6fcf8e", "#34b36a", "#1f7a45"],
+  bio: ["#e8edf2", "#f3d2a6", "#e8b06a", "#d9893a", "#a85a1c"],
+  tivazo: ["#e8edf2", "#c5d9f7", "#7eb0f0", "#4b8be0", "#2a5fb8"],
 } as const;
 
 /** Short multi-day windows (week / ~2 weeks) use a linear strip instead of the year grid. */
@@ -186,24 +185,19 @@ export function DashboardClockInsHeatmap({
     }),
   );
 
-  // Defense in depth: even if the parent passes a wider roster, day cells must
-  // only count the selected member/team — never the whole office.
+  // Parent (HourlyPanel) already scopes bio/tivazo by Group/Member via scopeRosterPeople.
+  // Only re-filter member here — exact team-string match is wrong (id vs label) and can
+  // empty a correctly scoped roster.
   const scopedPeople = useMemo(() => {
-    if (memberId) {
-      const key = memberId.trim().toLowerCase();
-      return people.filter(
-        (person) =>
-          person.email.toLowerCase() === key ||
-          person.id.toLowerCase() === key ||
-          person.name.toLowerCase() === key,
-      );
-    }
-    if (teamId) {
-      const key = teamId.trim().toLowerCase();
-      return people.filter((person) => person.team.trim().toLowerCase() === key);
-    }
-    return people;
-  }, [people, memberId, teamId]);
+    if (!memberId.trim()) return people;
+    const key = memberId.trim().toLowerCase();
+    return people.filter(
+      (person) =>
+        person.email.toLowerCase() === key ||
+        person.id.toLowerCase() === key ||
+        person.name.toLowerCase() === key,
+    );
+  }, [people, memberId]);
 
   const todayCounts = useMemo(() => {
     if (!singleDay) return { present: 0, absent: 0, total: 0 };
@@ -221,9 +215,11 @@ export function DashboardClockInsHeatmap({
     if (!daysInRange.length) return [];
     const byPeople = new Map<string, WorkdayPerson[]>();
     for (const person of scopedPeople) {
-      // Live roster rows are often undated; attribute them to the focused day so the chart matches chips.
-      const date = dayKey(person.date) || focusedDay;
+      // Only dated rows feed the local day map. Undated live roster rows must NOT
+      // stamp onto a multi-day window (that falsely marks one day "local" and zeros the rest).
+      const date = dayKey(person.date);
       if (!date) continue;
+      if (date < window.start || date > window.end) continue;
       const list = byPeople.get(date) ?? [];
       list.push(person);
       byPeople.set(date, list);
@@ -238,20 +234,18 @@ export function DashboardClockInsHeatmap({
         },
       ]),
     );
-    const populated = [...byDay.values()]
-      .map((row) => row.present)
-      .filter((value) => value > 0)
-      .sort((left, right) => left - right);
-    const at = (share: number) =>
-      populated.length ? populated[Math.min(populated.length - 1, Math.floor(share * (populated.length - 1)))] : 0;
-    const ranks = [at(0.25), at(0.5), at(0.75)];
 
-    // Punch tone still uses Bio vs Tivazo arrival/departure fields for heat color.
     const destSource: "bio" | "tivazo" = source === "tivazo" ? "tivazo" : "bio";
-    // Every calendar day in the filter — including Sat/Sun. Never invent weekend "rest".
-    return daysInRange.map((date) => {
+    // Presence intensity = headcount (not punctuality). Build ranks after resolving present.
+    const resolved: {
+      date: string;
+      present: number;
+      typical: number | null;
+      pending: boolean;
+      isFuture: boolean;
+      inRange: boolean;
+    }[] = daysInRange.map((date) => {
       const rows = byPeople.get(date) ?? [];
-      // Same Present rule as Daily clock-ins chips / source cards.
       const presentRows = rows.filter((row) => workdayPresentOn(row, source));
       const punchMinutes = presentRows
         .map((row) => sourcePunchMinutes(row, destSource, kind))
@@ -260,51 +254,64 @@ export function DashboardClockInsHeatmap({
         (row) => kind === "out" && (destSource === "bio" ? row.bioDeparture : row.tivazoDeparture) === "pending",
       );
       const stored = byDay.get(date);
-      // If this day is in the loaded roster, trust local Present only — never fall back to API
-      // (API fallback on an all-Absent local day would resurrect a stale Present count).
       const hasLocalDay = byPeople.has(date);
+      const localPresent = memberId
+        ? Math.min(1, presentRows.length)
+        : presentRows.length;
+      const apiPresent = stored?.present || 0;
       const isFuture = date > today;
-      // Member/team scope must never fall back to office-wide /dashboard/presence
-      // headcounts (those ignore or mishandle memberId and show 280+ in a 1-person view).
-      // Days without a scoped local row are 0 Present, not the office series.
-      const scoped = Boolean(memberId || teamId);
       let present = 0;
       if (!isFuture) {
-        if (hasLocalDay) {
-          present = presentRows.length;
-          // Single member → at most one Present per day.
-          if (memberId) present = Math.min(1, present);
-        } else if (!scoped) {
-          present = stored?.present || 0;
+        // Prefer /dashboard/presence (source + team/member aware). Local dated rows
+        // only fill gaps — never overwrite a positive API count with a sparse 0.
+        if (apiPresent > 0) {
+          present = memberId ? 1 : apiPresent;
+        } else if (hasLocalDay) {
+          present = localPresent;
+        } else {
+          present = 0;
         }
       }
-      // Under scope, ignore API typicals (they reflect the whole office).
       const typical = isFuture
         ? null
         : punchMinutes.length
           ? median(punchMinutes)
-          : scoped
-            ? null
-            : kind === "in"
-              ? stored?.typicalIn ?? null
-              : stored?.typicalOut ?? null;
-      const level = !present
-        ? 0
-        : punchMinutes.length || pending
-          ? presenceHeatLevel(typical, kind, pending)
-          : quantileLevel(present, ranks);
-      const inRange = date >= window.start && date <= window.end && !isFuture;
+          : kind === "in"
+            ? stored?.typicalIn ?? null
+            : stored?.typicalOut ?? null;
       return {
         date,
         present,
-        level,
-        label: isFuture
-          ? "Upcoming"
-          : punchLabel(kind, typical, pending, present),
-        inRange,
+        typical,
+        pending,
         isFuture,
+        inRange: date >= window.start && date <= window.end && !isFuture,
       };
     });
+
+    const populated = resolved
+      .map((row) => row.present)
+      .filter((value) => value > 0)
+      .sort((left, right) => left - right);
+    const at = (share: number) =>
+      populated.length ? populated[Math.min(populated.length - 1, Math.floor(share * (populated.length - 1)))] : 0;
+    const ranks = [at(0.25), at(0.5), at(0.75)];
+
+    return resolved.map((row) => ({
+      date: row.date,
+      present: row.present,
+      // Member view: Present = full intensity; office/team: quantile by headcount.
+      level: !row.present
+        ? 0
+        : memberId
+          ? 4
+          : quantileLevel(row.present, ranks),
+      label: row.isFuture
+        ? "Upcoming"
+        : punchLabel(kind, row.typical, row.pending, row.present),
+      inRange: row.inRange,
+      isFuture: row.isFuture,
+    }));
   }, [
     scopedPeople,
     presence.data?.days,
@@ -313,11 +320,9 @@ export function DashboardClockInsHeatmap({
     window.end,
     source,
     kind,
-    focusedDay,
     singleDay,
     today,
     memberId,
-    teamId,
   ]);
 
   const contributions = useMemo<Contribution[]>(() => {
@@ -350,12 +355,8 @@ export function DashboardClockInsHeatmap({
   const presentDays = dayMetrics.filter(
     (day) => day.present > 0 && day.date >= window.start && day.date <= window.end && day.date <= today,
   ).length;
-  // Under member/team scope, day cells come from the scoped roster — don't block on the
-  // office presence series (it is untrusted for headcounts when scoped).
-  const scopedView = Boolean(memberId || teamId);
-  const loading = scopedView
-    ? false
-    : presence.loading && !presence.data;
+  // Presence API is source + team/member aware — wait for it on multi-day windows.
+  const loading = presence.loading && !presence.data;
   const onDayActivate = useCallback(
     (day: Contribution) => {
       if (day.pad) return;
@@ -373,13 +374,20 @@ export function DashboardClockInsHeatmap({
   const rangeLabel = singleDay
     ? formatDisplayDate(focusedDay)
     : `${formatDisplayDate(window.start)} – ${formatDisplayDate(window.end)}`;
+  const scopeHint = memberId.trim()
+    ? "Selected member"
+    : teamId.trim()
+      ? "Selected group"
+      : "All people";
   const daysLabel = singleDay
     ? `${todayCounts.present} present · ${todayCounts.absent} not present`
-    : loading && !presence.data
-      ? "Loading…"
+    : loading
+      ? "Loading presence…"
       : presentDays
-        ? `${presentDays} present day${presentDays === 1 ? "" : "s"}`
-        : "No present days yet";
+        ? `${presentDays} present day${presentDays === 1 ? "" : "s"} · ${scopeHint}`
+        : presence.error
+          ? "Couldn’t load presence"
+          : `No present days in this range · ${scopeHint}`;
 
   const openPresent = () => {
     if (singleDay && focusedDay) {
@@ -430,13 +438,13 @@ export function DashboardClockInsHeatmap({
         <p className="smp-github-activity__hint">
           {memberId
             ? singleDay
-              ? "Click a segment for day detail"
-              : "Click a day for detail"
+              ? "Tap a segment for day detail"
+              : "Tap a day for detail"
             : singleDay
-              ? "Click a segment to view people"
-              : "Click a day to view people"}
+              ? "Tap Present / Not present for people"
+              : "Tap a day for people · color = how many Present"}
         </p>
-        {!singleDay && !useStrip ? (
+        {!singleDay ? (
           <div className="smp-github-activity__scale" aria-hidden="true">
             <span>Less</span>
             {[0, 1, 2, 3, 4].map((level) => (

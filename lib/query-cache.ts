@@ -2,7 +2,7 @@ import { isoDateInZone } from "@/lib/datetime";
 
 type CacheEntry<T> = { data: T; at: number };
 
-const MAX_ENTRIES = 40;
+const MAX_ENTRIES = 64;
 const cache = new Map<string, CacheEntry<unknown>>();
 
 function rangeFromUrl(url: string): { start: string; end: string } {

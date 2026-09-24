@@ -123,20 +123,28 @@ export default function BiomaticPage() {
     tab === "logs" ? withQuery("/daily-logs", snapshotParams) : null,
   );
 
+  // Table rows may narrow by the selected department + page search.
   const filteredTeams = useMemo(
     () => teamsFromBioMembers(membersAll.data?.items ?? [], teamId, query),
     [membersAll.data?.items, teamId, query],
   );
+  // Dropdown catalog must stay the full department list — never the selected subset.
+  // (Previously filterTeams was derived from filteredTeams, so after picking one
+  // department the searchable options collapsed to only that department.)
+  const catalogTeams = useMemo(
+    () => teamsFromBioMembers(membersAll.data?.items ?? [], "", ""),
+    [membersAll.data?.items],
+  );
   const filterTeams = useMemo(() => {
     const byId = new Map((filters.data?.teams ?? []).map((team) => [team.id, team]));
-    for (const team of filteredTeams) {
+    for (const team of catalogTeams) {
       if (!team.id || byId.has(team.id)) continue;
       byId.set(team.id, { id: team.id, label: team.name });
     }
     return [...byId.values()].sort((left, right) =>
       left.label.localeCompare(right.label, undefined, { sensitivity: "base" }),
     );
-  }, [filters.data?.teams, filteredTeams]);
+  }, [filters.data?.teams, catalogTeams]);
   const filterRoles = filters.data?.roles ?? [];
   const peopleScope = useMemo(
     () => ({ memberId, emails: emailScope, ids: idScope }),

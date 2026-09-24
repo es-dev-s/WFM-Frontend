@@ -157,8 +157,11 @@ export function DashboardDateRangePicker({
           max={today}
           onChange={onChange}
         />
-        <span className="smp-dashboard-date__label" aria-live="polite">
+        <span className="smp-dashboard-date__chip" aria-live="polite">
           <strong>{formatRangeLabel(start, end)}</strong>
+          <span className="smp-dashboard-date__chip-sep" aria-hidden="true">
+            ·
+          </span>
           <small>{activeLabel}</small>
         </span>
       </div>

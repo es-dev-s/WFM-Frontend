@@ -1,10 +1,9 @@
 "use client";
 
 import { memo } from "react";
-import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 import { useMenu } from "@/hooks/use-menu";
-import { LOGOUT_ACTION, PROFILE_ACTIONS } from "@/lib/navbar-data";
+import { LOGOUT_ACTION } from "@/lib/navbar-data";
 import { useSession } from "@/components/auth/SessionProvider";
 
 type ProfileMenuProps = {
@@ -72,34 +71,6 @@ function ProfileMenuComponent({ open, onOpenChange }: ProfileMenuProps) {
               <span className="smp-popover__profile-name">{user.name}</span>
               <span className="smp-popover__profile-email">{user.email}</span>
             </div>
-          </div>
-
-          <div className="smp-popover__divider" aria-hidden="true" />
-
-          <div className="smp-popover__list smp-popover__list--actions">
-            {PROFILE_ACTIONS.filter(
-              (action) => !action.wfmOnly || user.role === "wfm",
-            ).map((action) => {
-              const Icon = action.icon;
-              return (
-                <Link
-                  key={action.id}
-                  href={action.href ?? "/settings"}
-                  className="smp-action"
-                  role="menuitem"
-                  tabIndex={open ? 0 : -1}
-                  onClick={() => onOpenChange(false)}
-                >
-                  <span className="smp-action__icon" aria-hidden="true">
-                    <Icon strokeWidth={1.75} />
-                  </span>
-                  <span className="smp-action__copy">
-                    <span className="smp-action__label">{action.label}</span>
-                    <span className="smp-action__desc">{action.description}</span>
-                  </span>
-                </Link>
-              );
-            })}
           </div>
 
           <div className="smp-popover__divider" aria-hidden="true" />

@@ -1,7 +1,8 @@
 import type { DailyLogRow } from "@/lib/api";
+import { APP_TIMEZONE, isoDateInZone } from "@/lib/datetime";
 import { query, withTransaction } from "@/lib/server/auth/db";
 import { ensureAttendanceSchema } from "@/lib/server/attendance/schema";
-import { enumerateDays } from "@/lib/server/metrics";
+import { dayShowsPunches, enumerateDays, normalizeDayStatus } from "@/lib/server/metrics";
 
 export type AttendanceSource = "biometrics" | "tivazo";
 
@@ -108,6 +109,8 @@ export function toDailyLogRow(
   const department = asText(row.department) || groups[0] || "";
   const personId = asText(row.person_id);
   const day = asText(row.day);
+  const status = asText(row.status) || "Absent";
+  const showPunches = dayShowsPunches(status);
   return {
     id: day ? `${personId}:${day}` : personId,
     date: day,
@@ -121,20 +124,21 @@ export function toDailyLogRow(
     userStatus: "",
     active: "",
     disabled: "No",
-    status: asText(row.status) || "Absent",
-    inTime: asText(row.in_time),
-    outTime: asText(row.out_time),
-    trackedTime: asText(row.tracked_time),
-    manualTime: asText(row.manual_time),
+    status,
+    // Leave/Absent/Weekly off/Holiday: hide stored door/tracked (same issue class as Tivazo live bleed).
+    inTime: showPunches ? asText(row.in_time) : "",
+    outTime: showPunches ? asText(row.out_time) : "",
+    trackedTime: showPunches ? asText(row.tracked_time) : "",
+    manualTime: showPunches ? asText(row.manual_time) : "",
     breakTime: asText(row.break_time),
-    occupancy: asText(row.occupancy) || "0%",
-    utilization: asText(row.utilization) || "0%",
-    wtr: asText(row.wtr) || asText(row.utilization) || "0%",
+    occupancy: showPunches ? asText(row.occupancy) || "0%" : "0%",
+    utilization: showPunches ? asText(row.utilization) || "0%" : "0%",
+    wtr: showPunches ? asText(row.wtr) || asText(row.utilization) || "0%" : "0%",
     memberId: personId,
     employeeId: asText(row.employee_id) || personId,
     workspaceId: asText(row.workspace_id),
-    clockedInMs: Number(row.clocked_in_ms || 0) || 0,
-    lastScreenshotMs: Number(row.last_screenshot_ms || 0) || 0,
+    clockedInMs: showPunches ? Number(row.clocked_in_ms || 0) || 0 : 0,
+    lastScreenshotMs: showPunches ? Number(row.last_screenshot_ms || 0) || 0 : 0,
     allTimeWorkHour: 0,
     screenshotFrequency: 0,
     lastActiveAt: "",
@@ -405,7 +409,12 @@ function laterClock(left: string, right: string): string {
 }
 
 function mergeLog(prev: DailyLogRow, next: DailyLogRow): DailyLogRow {
-  const present = prev.status === "Present" || next.status === "Present";
+  const prevDay = normalizeDayStatus(prev.status);
+  const nextDay = normalizeDayStatus(next.status);
+  const present = prevDay === "Present" || nextDay === "Present";
+  const half = prevDay === "Half day" || nextDay === "Half day";
+  const status = present ? "Present" : half ? "Half day" : asText(next.status) || prev.status;
+  const showPunches = dayShowsPunches(status);
   return {
     ...prev,
     ...next,
@@ -413,19 +422,20 @@ function mergeLog(prev: DailyLogRow, next: DailyLogRow): DailyLogRow {
     email: asText(next.email) || prev.email,
     group: asText(next.group) || prev.group,
     groups: next.groups?.length ? next.groups : prev.groups,
-    status: present ? "Present" : asText(next.status) || prev.status,
-    inTime: earlierClock(prev.inTime, next.inTime),
-    outTime: laterClock(prev.outTime, next.outTime),
-    trackedTime: laterClock(prev.trackedTime, next.trackedTime),
-    manualTime: laterClock(prev.manualTime, next.manualTime),
-    occupancy: present ? "100%" : asText(next.occupancy) || prev.occupancy,
-    utilization: asText(next.utilization) || prev.utilization,
-    wtr: asText(next.wtr) || prev.wtr,
-    clockedInMs:
-      prev.clockedInMs && next.clockedInMs
+    status,
+    inTime: showPunches ? earlierClock(prev.inTime, next.inTime) : "",
+    outTime: showPunches ? laterClock(prev.outTime, next.outTime) : "",
+    trackedTime: showPunches ? laterClock(prev.trackedTime, next.trackedTime) : "",
+    manualTime: showPunches ? laterClock(prev.manualTime, next.manualTime) : "",
+    occupancy: present ? "100%" : showPunches ? asText(next.occupancy) || prev.occupancy : "0%",
+    utilization: showPunches ? asText(next.utilization) || prev.utilization : "0%",
+    wtr: showPunches ? asText(next.wtr) || prev.wtr : "0%",
+    clockedInMs: showPunches
+      ? prev.clockedInMs && next.clockedInMs
         ? Math.min(prev.clockedInMs, next.clockedInMs)
-        : prev.clockedInMs || next.clockedInMs,
-    lastScreenshotMs: Math.max(prev.lastScreenshotMs, next.lastScreenshotMs),
+        : prev.clockedInMs || next.clockedInMs
+      : 0,
+    lastScreenshotMs: showPunches ? Math.max(prev.lastScreenshotMs, next.lastScreenshotMs) : 0,
   };
 }
 
@@ -813,8 +823,9 @@ export async function listHistoryLogs(
 }
 
 function asDayKey(value: unknown): string {
+  // Calendar day in app zone — never UTC-slice a Date (Kathmandu midnight → prior UTC day).
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString().slice(0, 10);
+    return isoDateInZone(value, APP_TIMEZONE);
   }
   const text = asText(value);
   if (text.length >= 10 && isDay(text.slice(0, 10))) return text.slice(0, 10);
@@ -844,18 +855,34 @@ export async function presenceByDay(
   start: string,
   end: string,
   teamNeedle = "",
+  memberNeedle = "",
 ): Promise<Map<string, PresenceDay>> {
   await ensureAttendanceSchema();
   if (!isDay(start) || !isDay(end)) return new Map();
   const table = source === "biometrics" ? "wfm_bio_day_logs" : "wfm_tivazo_day_logs";
   const team = teamNeedle.trim().toLowerCase();
-  const teamClause =
-    !team
-      ? ""
-      : source === "biometrics"
-        ? " AND (lower(department) = $3 OR lower(department) LIKE '%' || $3 || '%' OR EXISTS (SELECT 1 FROM unnest(groups) g WHERE lower(g) = $3 OR lower(g) LIKE '%' || $3 || '%'))"
-        : " AND EXISTS (SELECT 1 FROM unnest(groups) g WHERE lower(g) = $3 OR lower(g) LIKE '%' || $3 || '%')";
-  const params: string[] = team ? [start, end, team] : [start, end];
+  const member = memberNeedle.trim().toLowerCase();
+  const params: string[] = [start, end];
+  const clauses: string[] = [];
+  if (team) {
+    params.push(team);
+    const p = `$${params.length}`;
+    clauses.push(
+      source === "biometrics"
+        ? `(lower(department) = ${p} OR lower(department) LIKE '%' || ${p} || '%' OR EXISTS (SELECT 1 FROM unnest(groups) g WHERE lower(g) = ${p} OR lower(g) LIKE '%' || ${p} || '%'))`
+        : `EXISTS (SELECT 1 FROM unnest(groups) g WHERE lower(g) = ${p} OR lower(g) LIKE '%' || ${p} || '%')`,
+    );
+  }
+  if (member) {
+    params.push(member);
+    const p = `$${params.length}`;
+    clauses.push(
+      source === "biometrics"
+        ? `(lower(coalesce(employee_id, '')) = ${p} OR lower(coalesce(email, '')) = ${p} OR lower(coalesce(name, '')) = ${p})`
+        : `(lower(coalesce(member_id, '')) = ${p} OR lower(coalesce(employee_id, '')) = ${p} OR lower(coalesce(email, '')) = ${p} OR lower(coalesce(name, '')) = ${p})`,
+    );
+  }
+  const teamClause = clauses.length ? ` AND ${clauses.join(" AND ")}` : "";
   const result = await query<{
     day: string;
     present: number;

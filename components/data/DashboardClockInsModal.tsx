@@ -166,7 +166,7 @@ export function DashboardClockInsModal({
     <div className="smp-coverage-layer">
       <div className="smp-coverage-backdrop" onClick={onClose} />
       <div
-        className="smp-coverage-dialog smp-clockins-dialog"
+        className="smp-coverage-dialog smp-clockins-dialog smp-clockins-dialog--premium smp-clockins-dialog--dense"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

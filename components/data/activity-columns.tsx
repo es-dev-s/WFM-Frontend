@@ -8,6 +8,7 @@ import {
 } from "@/components/data/cells";
 import type { DailyEntry, DailyLogRow, MemberDirectoryRow, Team } from "@/lib/api";
 import { formatInstantMs } from "@/lib/datetime";
+import { workdayTimeMetrics } from "@/lib/tracked-time";
 
 export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   {
@@ -77,10 +78,34 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   {
     id: "tracked",
     header: "Tracked",
-    width: "96px",
+    width: "88px",
+    align: "right",
+    priority: 1,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.trackedLabel} />;
+    },
+  },
+  {
+    id: "shortfall",
+    header: "Shortfall",
+    width: "88px",
     align: "right",
     priority: 2,
-    render: (row) => <CellText value={row.trackedTime} />,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.shortfallLabel} tone={m.met ? "ok" : "primary"} />;
+    },
   },
 ];
 
@@ -160,10 +185,34 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   {
     id: "tracked",
     header: "Tracked",
-    width: "96px",
+    width: "88px",
+    align: "right",
+    priority: 1,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "tivazo",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.trackedLabel} />;
+    },
+  },
+  {
+    id: "shortfall",
+    header: "Shortfall",
+    width: "88px",
     align: "right",
     priority: 2,
-    render: (row) => <CellText value={row.trackedTime} />,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "tivazo",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.shortfallLabel} tone={m.met ? "ok" : "primary"} />;
+    },
   },
   {
     id: "manual",
@@ -331,5 +380,35 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
     align: "right",
     priority: 1,
     render: (row) => <CellText value={row.outTime} />,
+  },
+  {
+    id: "tracked",
+    header: "Tracked",
+    width: "88px",
+    align: "right",
+    priority: 1,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.trackedLabel} />;
+    },
+  },
+  {
+    id: "shortfall",
+    header: "Shortfall",
+    width: "88px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.shortfallLabel} tone={m.met ? "ok" : "primary"} />;
+    },
   },
 ];

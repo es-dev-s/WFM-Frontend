@@ -1,11 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import {
-  CircleHelp,
-  LogOut,
-  Settings,
-  UserRound,
-  Users,
-} from "lucide-react";
+import { LogOut } from "lucide-react";
 
 export type NotificationItem = {
   id: string;
@@ -53,38 +47,6 @@ export const NOTIFICATIONS: NotificationItem[] = [
     body: "Curriculum sync moved to Thursday, 9:30 AM.",
     time: "Yesterday",
     unread: false,
-  },
-];
-
-export const PROFILE_ACTIONS: ProfileAction[] = [
-  {
-    id: "profile",
-    label: "View profile",
-    description: "Name, role, and contact",
-    href: "/settings",
-    icon: UserRound,
-  },
-  {
-    id: "account",
-    label: "Account settings",
-    description: "Security and preferences",
-    href: "/settings",
-    icon: Settings,
-  },
-  {
-    id: "users",
-    label: "Users",
-    description: "Team leads and assignments",
-    href: "/users",
-    icon: Users,
-    wfmOnly: true,
-  },
-  {
-    id: "help",
-    label: "Help & support",
-    description: "Guides",
-    href: "/settings",
-    icon: CircleHelp,
   },
 ];
 
