@@ -172,17 +172,24 @@ export function DashboardOverview() {
           label="dashboard"
         />
       ) : (
-        <MotionSection delay={0}>
-          <DashboardStatCards
-            summary={view?.summary ?? null}
-            scope={{
-              teamId,
-              memberId,
-              startDate,
-              endDate,
-            }}
-          />
-        </MotionSection>
+        <QueryState
+          loading={false}
+          error={overview.error}
+          onRetry={overview.reload}
+          label="dashboard"
+        >
+          <MotionSection delay={0}>
+            <DashboardStatCards
+              summary={view?.summary ?? null}
+              scope={{
+                teamId,
+                memberId,
+                startDate,
+                endDate,
+              }}
+            />
+          </MotionSection>
+        </QueryState>
       )}
 
       <MotionSection as="section" className="smp-dashboard-filters" aria-label="Dashboard filters" delay={0.03}>

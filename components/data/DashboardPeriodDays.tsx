@@ -16,6 +16,7 @@ import { biomaticHref, emailsParam, recordHref, tivazoHref } from "@/lib/href";
 import { dayShowsPunches, isRestStatus,
   isWeeklyOffStatus, normalizeDayStatus } from "@/lib/server/metrics";
 import {
+  isLateClockIn,
   dailyLogToRoster,
   formatMinutes,
   parseClockMinutes,
@@ -54,6 +55,14 @@ type PeriodDayRow = {
   tivazoOut: string;
   tracked: string;
 };
+
+function rowHasLateCheckIn(row: PeriodDayRow, source: "all" | "bio" | "tivazo"): boolean {
+  const bioLate = isLateClockIn(row.bioIn);
+  const tivazoLate = isLateClockIn(row.tivazoIn);
+  if (source === "bio") return bioLate;
+  if (source === "tivazo") return tivazoLate;
+  return bioLate || tivazoLate;
+}
 
 function asIdentity(row: IdentityLike): IdentityLike {
   return {
@@ -580,6 +589,7 @@ export function DashboardPeriodDays({
                   className="smp-period-days__row"
                   data-name={showName ? "true" : "false"}
                   data-punch-source={source}
+                  data-late={rowHasLateCheckIn(row, source) ? "true" : undefined}
                   data-weekend={isSaturday(row.date) ? "true" : undefined}
                   data-upcoming={row.date > today ? "true" : undefined}
                 >

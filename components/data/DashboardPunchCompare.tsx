@@ -51,7 +51,11 @@ function Cell({
   const inner = (
     <>
       <p className="smp-punch-cell__label">{label}</p>
-      <p className="smp-punch-cell__value" data-empty={value === "—" ? "true" : undefined}>
+      <p
+        className="smp-punch-cell__value"
+        data-empty={value === "—" ? "true" : undefined}
+        data-precision={value.length > 5 ? "true" : undefined}
+      >
         {value}
       </p>
       <p className="smp-punch-cell__meta">{meta}</p>
@@ -136,18 +140,18 @@ function LaneCard({
           }
         />
         <Cell
-          label="Between"
+          label="Avg Between"
           value={gap.label}
-          meta={gap.note}
+          meta={`${gap.note} · ${peopleLabel(gap.people, countNoun)} paired`}
           tone="gap"
           ariaDetail={
             canOpen(gap.people)
-              ? `${title} · Between: ${gap.label}, ${gap.note}. Open paired people.`
+              ? `${title} · Avg Between: ${gap.label}, ${gap.note}, ${peopleLabel(gap.people, countNoun)} paired. Open paired people.`
               : undefined
           }
           onOpen={
             canOpen(gap.people)
-              ? () => onOpen(gapSlot, `${title} · Between`, gap)
+              ? () => onOpen(gapSlot, `${title} · Avg Between`, gap)
               : undefined
           }
         />
@@ -164,14 +168,14 @@ function LaneCard({
           }
         />
         <Cell
-          label="Overall"
+          label="Overall Avg"
           value={lane.overall.time}
           meta={peopleLabel(lane.overall.people, countNoun)}
           tone="overall"
-          ariaDetail={`${title} · Overall: ${lane.overall.time}, ${peopleLabel(lane.overall.people, countNoun)}. Open people.`}
+          ariaDetail={`${title} · Overall Avg: ${lane.overall.time}, ${peopleLabel(lane.overall.people, countNoun)}. Open people.`}
           onOpen={
             canOpen(lane.overall.people)
-              ? () => onOpen(overallSlot, `${title} · Overall`, lane.overall)
+              ? () => onOpen(overallSlot, `${title} · Overall Avg`, lane.overall)
               : undefined
           }
         />
@@ -225,10 +229,10 @@ function slotPageHref(
 function slotHint(slot: PunchCompareSlot, count: number, countNoun: string): string {
   const label = peopleLabel(count, "people");
   if (slot.includes("gap")) {
-    return `${label} with both punches · same paired set as Between`;
+    return `${label} with both source averages · compares each member's average times`;
   }
   if (slot.includes("overall")) {
-    return `${label} in the overall median · earliest in / latest confirmed out`;
+    return `${label} · one combined value per member (earliest average in / latest confirmed out)`;
   }
   if (slot.includes("bio")) {
     return `${label} on Biometrics · same set as the card`;
@@ -317,7 +321,9 @@ export function DashboardPunchCompare({
       <header className="smp-punch-block__head">
         <div>
           <h3 className="smp-punch-block__title">Check-in and check-out</h3>
-          <p className="smp-punch-block__sub">Click a card to see the people behind that median</p>
+          <p className="smp-punch-block__sub">
+            Range values average each member&apos;s eligible daily punch times and retain second-level precision. Source cards count members with that source; Avg Between counts paired members only.
+          </p>
         </div>
       </header>
       <div className="smp-punch-compare">
@@ -325,8 +331,8 @@ export function DashboardPunchCompare({
           title="Check-in"
           hint="Biometrics → Tivazo"
           period={periodLabel}
-          firstLabel="Biometrics"
-          secondLabel="Tivazo"
+          firstLabel="Biometrics Avg"
+          secondLabel="Tivazo Avg"
           firstTone="bio"
           secondTone="tivazo"
           lane={data.checkIn}
@@ -341,8 +347,8 @@ export function DashboardPunchCompare({
           title="Check-out"
           hint="Tivazo → Biometrics"
           period={periodLabel}
-          firstLabel="Tivazo"
-          secondLabel="Biometrics"
+          firstLabel="Tivazo Avg"
+          secondLabel="Biometrics Avg"
           firstTone="tivazo"
           secondTone="bio"
           lane={data.checkOut}

@@ -54,6 +54,12 @@ export function DashboardStatCards({
   return (
     <section className="smp-stat-cards smp-stat-cards--dashboard" aria-label="Workspace averages">
       {STAT_CARDS.map(({ label, icon: Icon, tone, value, href }) => {
+        const title =
+          label === "Avg Clock-in"
+            ? "Average first clock-in before 8:00 AM; arrivals at or after 8:00 AM are excluded."
+            : label === "Avg time loss"
+              ? "Average Bio↔Tivazo lag at clock-in and clock-out (Combined source only)"
+              : undefined;
         const body = (
           <>
             <span className="smp-stat-card__icon" aria-hidden="true">
@@ -75,6 +81,7 @@ export function DashboardStatCards({
               data-pending={summary ? undefined : "true"}
               {...(tone ? { "data-tone": tone } : {})}
               aria-label={`Open ${label}`}
+              title={title}
             >
               {body}
             </Link>
@@ -86,7 +93,7 @@ export function DashboardStatCards({
             className="smp-stat-card"
             data-pending={summary ? undefined : "true"}
             {...(tone ? { "data-tone": tone } : {})}
-            title="Average Bio↔Tivazo lag at clock-in and clock-out (Combined source only)"
+            title={title}
           >
             {body}
           </div>

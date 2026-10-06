@@ -14,11 +14,16 @@ import {
   useQuery,
   withQuery,
 } from "@/lib/api";
-import { buildPunchCompareBundle, scopeRosterPeople } from "@/lib/dashboard-scope";
+import {
+  averageDashboardClockIn,
+  buildPunchCompareBundle,
+  scopeRosterPeople,
+} from "@/lib/dashboard-scope";
 import { addDaysISO, formatDisplayDate, formatRangeLabel, isoDateInZone } from "@/lib/datetime";
 import { createIdentityIndex, identityCanonical } from "@/lib/identity";
 import { isPresentAttendance, normalizeDayStatus } from "@/lib/server/metrics";
 import {
+  DASHBOARD_LATE_AFTER_MIN,
   averageWorkdayTimes,
   dailyLogToRoster,
   mergeWorkdayPeople,
@@ -105,6 +110,12 @@ function overlayLivePunches(
         // with another day's clocked_in / tracked.
         startTime: livePresent ? pickEarlierLabel(now.startTime, rec.startTime) : rec.startTime,
         endTime: livePresent ? pickLaterLabel(now.endTime, rec.endTime) : rec.endTime,
+        clockInSumMinutes: rec.clockInSumMinutes,
+        clockInSamples: rec.clockInSamples,
+        clockInBeforeEightSumMinutes: rec.clockInBeforeEightSumMinutes,
+        clockInBeforeEightSamples: rec.clockInBeforeEightSamples,
+        clockOutSumMinutes: rec.clockOutSumMinutes,
+        clockOutSamples: rec.clockOutSamples,
         clockedIn: livePresent ? pickEarlierLabel(now.clockedIn, rec.clockedIn) : rec.clockedIn,
         lastScreenshot: livePresent
           ? pickLaterLabel(now.lastScreenshot, rec.lastScreenshot)
@@ -335,10 +346,27 @@ export function DashboardHourlyPanel({
   }, [roster.bio, roster.tivazo, sourceBio, sourceTivazo, source, today, viewingRange, viewStart, period]);
   const compare = punchBundle.compare;
   const kpis = useMemo(() => {
-    const merged = mergeWorkdayPeople(sourceBio, sourceTivazo, today);
-    // Median Clock in / out among Present for the selected Source only.
-    return averageWorkdayTimes(presentPeople(merged, source));
-  }, [sourceBio, sourceTivazo, source, today]);
+    const merged = mergeWorkdayPeople(
+      sourceBio,
+      sourceTivazo,
+      today,
+      DASHBOARD_LATE_AFTER_MIN,
+    );
+    const times = averageWorkdayTimes(
+      presentPeople(merged, source),
+      DASHBOARD_LATE_AFTER_MIN,
+    );
+    const hasRangeSamples =
+      viewingRange &&
+      [...sourceBio, ...sourceTivazo].some((person) => person.clockInSamples != null);
+    // Range overview rows are pre-aggregated; use their eligible sample totals.
+    return hasRangeSamples
+      ? {
+          ...times,
+          inTime: averageDashboardClockIn(roster.bio, roster.tivazo, source),
+        }
+      : times;
+  }, [sourceBio, sourceTivazo, source, today, viewingRange, roster.bio, roster.tivazo]);
 
   const dayLoading =
     dayFocus &&
@@ -369,7 +397,9 @@ export function DashboardHourlyPanel({
           ) : null}
           <div className="smp-clockins-kpis" aria-label="Average clock times">
             <p className="smp-clockins-kpi" data-empty={overallIn === "—" ? "true" : undefined}>
-              <span>Clock in</span>
+              <span title="Average of first clock-ins before 8:00 AM; arrivals at or after 8:00 AM are excluded">
+                Avg clock in (&lt; 8:00)
+              </span>
               <strong>{overallIn}</strong>
             </p>
             <p className="smp-clockins-kpi" data-empty={overallOut === "—" ? "true" : undefined}>

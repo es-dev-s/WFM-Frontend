@@ -33,8 +33,20 @@ export function peopleOnTeam(
 export function cardPeople(rows: DashboardRosterPerson[], kind: CardKind): DashboardRosterPerson[] {
   if (kind === "all") return rows;
   if (kind === "present") return rows.filter((row) => normalizeDayStatus(row.attendance) === "Present");
-  if (kind === "leave") return rows.filter((row) => normalizeDayStatus(row.attendance) === "Leave");
-  if (kind === "absent") return rows.filter((row) => normalizeDayStatus(row.attendance) === "Absent");
+  if (kind === "leave") {
+    return rows.filter((row) =>
+      row.leaveDays != null
+        ? row.leaveDays > 0
+        : normalizeDayStatus(row.attendance) === "Leave",
+    );
+  }
+  if (kind === "absent") {
+    return rows.filter((row) =>
+      row.absentDays != null
+        ? row.absentDays > 0
+        : normalizeDayStatus(row.attendance) === "Absent",
+    );
+  }
   const live = (row: DashboardRosterPerson) => row.status.trim().toLowerCase();
   if (kind === "active") return rows.filter((row) => live(row) === "active" || live(row) === "tracking");
   if (kind === "idle") return rows.filter((row) => live(row) === "idle");

@@ -1,4 +1,5 @@
 import {
+  addDaysISO,
   addMonthsISO,
   endOfMonthISO,
   endOfWeekSaturday,
@@ -32,8 +33,8 @@ export function datePresets(today = isoDateInZone()): DatePreset[] {
     {
       id: "last3Months",
       label: "Past 3 months",
-      start: startOfMonthISO(addMonthsISO(thisMonthStart, -3)),
-      end: endOfMonthISO(today),
+      start: addDaysISO(today, -89),
+      end: today,
     },
   ];
 }

@@ -4,6 +4,8 @@ import { isRestStatus, normalizeDayStatus, trackedSecondsOf } from "@/lib/server
 
 export const WORKDAY_START_MIN = 7 * 60;
 export const LATE_AFTER_MIN = 7 * 60 + 15;
+/** Dashboard-specific boundary: arrivals at 08:00 are late. */
+export const DASHBOARD_LATE_AFTER_MIN = 8 * 60;
 export const WORKDAY_END_MIN = 15 * 60;
 export const SLOT_MINUTES = 15;
 const MIN_SHIFT_MINUTES = 3 * 60;
@@ -40,6 +42,14 @@ export type WorkdayPerson = {
   bioOutLabel: string;
   tivazoInLabel: string;
   tivazoOutLabel: string;
+  bioInSumMinutes?: number;
+  bioInSamples?: number;
+  bioOutSumMinutes?: number;
+  bioOutSamples?: number;
+  tivazoInSumMinutes?: number;
+  tivazoInSamples?: number;
+  tivazoOutSumMinutes?: number;
+  tivazoOutSamples?: number;
   bioArrival: ArrivalStatus;
   bioDeparture: DepartureStatus;
   tivazoArrival: ArrivalStatus;
@@ -70,6 +80,11 @@ export type ClockGap = {
 
 export function parseClockMinutes(label: string): number | null {
   return parseMinutes(label);
+}
+
+export function isLateClockIn(label: string): boolean {
+  const minutes = parseMinutes(label);
+  return minutes != null && minutes >= DASHBOARD_LATE_AFTER_MIN;
 }
 
 /** Prefer tracked seconds; else a completed in→out span (either source). Null = still in / unknown. */
@@ -310,6 +325,18 @@ export function workdayPresentOn(
   return person.bioPresent || person.tivazoPresent;
 }
 
+export function workdayLateOn(
+  person: WorkdayPerson,
+  source: "all" | "bio" | "tivazo" = "all",
+): boolean {
+  if (source === "bio") return person.bioPresent && person.bioArrival === "late";
+  if (source === "tivazo") return person.tivazoPresent && person.tivazoArrival === "late";
+  return (
+    (person.bioPresent && person.bioArrival === "late") ||
+    (person.tivazoPresent && person.tivazoArrival === "late")
+  );
+}
+
 export function uniqueWorkdayPeople(people: WorkdayPerson[]): WorkdayPerson[] {
   const map = new Map<string, WorkdayPerson>();
   const idToKey = new Map<string, string>();
@@ -364,9 +391,12 @@ function pickMinutes(
   return mode === "min" ? Math.min(...values) : Math.max(...values);
 }
 
-function arrivalOf(minutes: number | null): ArrivalStatus {
+function arrivalOf(
+  minutes: number | null,
+  lateAfterMin = LATE_AFTER_MIN,
+): ArrivalStatus {
   if (minutes == null) return "missing";
-  return minutes > LATE_AFTER_MIN ? "late" : "on-time";
+  return minutes >= lateAfterMin ? "late" : "on-time";
 }
 
 function departureOf(minutes: number | null, pending: boolean): DepartureStatus {
@@ -396,6 +426,14 @@ type WorkdayDraft = {
   tivazoConfirmed: boolean;
   bioPresent: boolean;
   tivazoPresent: boolean;
+  bioInSumMinutes: number;
+  bioInSamples: number;
+  bioOutSumMinutes: number;
+  bioOutSamples: number;
+  tivazoInSumMinutes: number;
+  tivazoInSamples: number;
+  tivazoOutSumMinutes: number;
+  tivazoOutSamples: number;
   sources: Array<"bio" | "tivazo">;
 };
 
@@ -407,6 +445,7 @@ export function mergeWorkdayPeople(
   bio: DashboardRosterPerson[],
   tivazo: DashboardRosterPerson[],
   today: boolean | string,
+  lateAfterMin = LATE_AFTER_MIN,
 ): WorkdayPerson[] {
   const todayDate = typeof today === "string" ? today : "";
   const forceToday = today === true;
@@ -442,6 +481,14 @@ export function mergeWorkdayPeople(
       tivazoConfirmed: prev?.tivazoConfirmed ?? false,
       bioPresent: prev?.bioPresent ?? false,
       tivazoPresent: prev?.tivazoPresent ?? false,
+      bioInSumMinutes: prev?.bioInSumMinutes ?? 0,
+      bioInSamples: prev?.bioInSamples ?? 0,
+      bioOutSumMinutes: prev?.bioOutSumMinutes ?? 0,
+      bioOutSamples: prev?.bioOutSamples ?? 0,
+      tivazoInSumMinutes: prev?.tivazoInSumMinutes ?? 0,
+      tivazoInSamples: prev?.tivazoInSamples ?? 0,
+      tivazoOutSumMinutes: prev?.tivazoOutSumMinutes ?? 0,
+      tivazoOutSamples: prev?.tivazoOutSamples ?? 0,
       sources: prev ? [...prev.sources] : [],
     };
     if (row.source === "bio") {
@@ -449,11 +496,59 @@ export function mergeWorkdayPeople(
       next.bioOutMinutes = pickMinutes(prev?.bioOutMinutes, outMinutes, "max");
       next.bioConfirmed = Boolean(prev?.bioConfirmed) || confirmed;
       next.bioPresent = Boolean(prev?.bioPresent) || (!resting && rowCountsPresent(row));
+      next.bioInSumMinutes +=
+        row.clockInSamples != null
+          ? row.clockInBeforeEightSumMinutes ?? 0
+          : inMinutes != null && inMinutes < DASHBOARD_LATE_AFTER_MIN
+            ? inMinutes
+            : 0;
+      next.bioInSamples +=
+        row.clockInSamples != null
+          ? row.clockInBeforeEightSamples ?? 0
+          : inMinutes != null && inMinutes < DASHBOARD_LATE_AFTER_MIN
+            ? 1
+            : 0;
+      next.bioOutSumMinutes +=
+        row.clockOutSamples != null
+          ? row.clockOutSumMinutes ?? 0
+          : confirmed && outMinutes != null
+            ? outMinutes
+            : 0;
+      next.bioOutSamples +=
+        row.clockOutSamples != null
+          ? row.clockOutSamples
+          : confirmed && outMinutes != null
+            ? 1
+            : 0;
     } else {
       next.tivazoInMinutes = pickMinutes(prev?.tivazoInMinutes, inMinutes, "min");
       next.tivazoOutMinutes = pickMinutes(prev?.tivazoOutMinutes, outMinutes, "max");
       next.tivazoConfirmed = Boolean(prev?.tivazoConfirmed) || confirmed;
       next.tivazoPresent = Boolean(prev?.tivazoPresent) || (!resting && rowCountsPresent(row));
+      next.tivazoInSumMinutes +=
+        row.clockInSamples != null
+          ? row.clockInBeforeEightSumMinutes ?? 0
+          : inMinutes != null && inMinutes < DASHBOARD_LATE_AFTER_MIN
+            ? inMinutes
+            : 0;
+      next.tivazoInSamples +=
+        row.clockInSamples != null
+          ? row.clockInBeforeEightSamples ?? 0
+          : inMinutes != null && inMinutes < DASHBOARD_LATE_AFTER_MIN
+            ? 1
+            : 0;
+      next.tivazoOutSumMinutes +=
+        row.clockOutSamples != null
+          ? row.clockOutSumMinutes ?? 0
+          : confirmed && outMinutes != null
+            ? outMinutes
+            : 0;
+      next.tivazoOutSamples +=
+        row.clockOutSamples != null
+          ? row.clockOutSamples
+          : confirmed && outMinutes != null
+            ? 1
+            : 0;
     }
     if (!next.sources.includes(row.source)) next.sources.push(row.source);
     map.set(key, next);
@@ -476,18 +571,26 @@ export function mergeWorkdayPeople(
         outMinutes: person.outMinutes,
         inLabel: clockLabel(person.inMinutes),
         outLabel: clockLabel(person.outMinutes),
-        arrival: arrivalOf(person.inMinutes),
+        arrival: arrivalOf(person.inMinutes, lateAfterMin),
         departure: departureOf(person.outMinutes, todayRow && !confirmed),
         sources: person.sources,
         bioPresent: person.bioPresent,
         tivazoPresent: person.tivazoPresent,
+        bioInSumMinutes: person.bioInSumMinutes,
+        bioInSamples: person.bioInSamples,
+        bioOutSumMinutes: person.bioOutSumMinutes,
+        bioOutSamples: person.bioOutSamples,
+        tivazoInSumMinutes: person.tivazoInSumMinutes,
+        tivazoInSamples: person.tivazoInSamples,
+        tivazoOutSumMinutes: person.tivazoOutSumMinutes,
+        tivazoOutSamples: person.tivazoOutSamples,
         bioInLabel: clockLabel(person.bioInMinutes),
         bioOutLabel: clockLabel(person.bioOutMinutes),
         tivazoInLabel: clockLabel(person.tivazoInMinutes),
         tivazoOutLabel: clockLabel(person.tivazoOutMinutes),
-        bioArrival: arrivalOf(person.bioInMinutes),
+        bioArrival: arrivalOf(person.bioInMinutes, lateAfterMin),
         bioDeparture: departureOf(person.bioOutMinutes, todayRow && person.sources.includes("bio") && !person.bioConfirmed),
-        tivazoArrival: arrivalOf(person.tivazoInMinutes),
+        tivazoArrival: arrivalOf(person.tivazoInMinutes, lateAfterMin),
         tivazoDeparture: departureOf(
           person.tivazoOutMinutes,
           todayRow && person.sources.includes("tivazo") && !person.tivazoConfirmed,
@@ -533,18 +636,30 @@ function medianMinutes(values: number[]): number | null {
   return (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-export function averageWorkdayTimes(people: WorkdayPerson[]): { inTime: string; outTime: string } {
-  const ins = people
+export function averageWorkdayTimes(
+  people: WorkdayPerson[],
+  lateAfterMin?: number,
+): { inTime: string; outTime: string } {
+  const punches = people
     .map((person) => person.inMinutes)
     .filter((value): value is number => value != null);
+  const ins =
+    lateAfterMin == null
+      ? punches
+      : punches.filter((value) => value < lateAfterMin);
   // Pending / unconfirmed outs (common on live Tivazo screenshots) must not skew "typical out".
   const outs = people
     .filter((person) => person.departure !== "pending" && person.outMinutes != null)
     .map((person) => person.outMinutes as number);
-  const inMedian = medianMinutes(ins);
+  const inAverage =
+    lateAfterMin == null
+      ? medianMinutes(ins)
+      : ins.length
+        ? ins.reduce((sum, value) => sum + value, 0) / ins.length
+        : null;
   const outMedian = medianMinutes(outs);
   return {
-    inTime: inMedian == null ? "—" : formatMinutes(inMedian),
+    inTime: inAverage == null ? "—" : formatMinutes(inAverage),
     outTime: outMedian == null ? "—" : formatMinutes(outMedian),
   };
 }
@@ -613,10 +728,11 @@ export function presenceHeatLevel(
   minutes: number | null,
   kind: "in" | "out",
   pending = false,
+  lateAfterMin = LATE_AFTER_MIN,
 ): PresenceHeatLevel {
   if (kind === "in") {
     if (minutes == null) return 0;
-    if (minutes <= LATE_AFTER_MIN) return 4;
+    if (minutes <= lateAfterMin) return 4;
     if (minutes <= 8 * 60) return 3;
     if (minutes <= 9 * 60) return 2;
     return 1;

@@ -3,7 +3,7 @@
 import { PersonCell } from "@/components/data/cells";
 import { StatusPill } from "@/components/data/StatusPill";
 import type { ArrivalStatus, DepartureStatus, WorkdayPerson } from "@/lib/workday-clock";
-import { workdayPresentOn } from "@/lib/workday-clock";
+import { workdayLateOn, workdayPresentOn } from "@/lib/workday-clock";
 import { Search, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -23,12 +23,27 @@ function matches(person: WorkdayPerson, needle: string): boolean {
 function flagPills(person: WorkdayPerson, source: ClockInsSource) {
   const flags: string[] = [];
   const present = workdayPresentOn(person, source);
+  const late = workdayLateOn(person, source);
+  const arrival =
+    source === "bio"
+      ? person.bioArrival
+      : source === "tivazo"
+        ? person.tivazoArrival
+        : late
+          ? "late"
+          : person.arrival;
+  const departure =
+    source === "bio"
+      ? person.bioDeparture
+      : source === "tivazo"
+        ? person.tivazoDeparture
+        : person.departure;
   if (present) flags.push("Present");
-  if (person.arrival === "on-time") flags.push("On time");
-  if (person.arrival === "late") flags.push("Late");
-  if (person.departure === "early") flags.push("Early");
-  if (person.departure === "on-time") flags.push("Full day");
-  if (person.departure === "pending") flags.push("Still in");
+  if (late) flags.push("Late");
+  else if (present && arrival === "on-time") flags.push("On time");
+  if (departure === "early") flags.push("Early");
+  if (departure === "on-time") flags.push("Full day");
+  if (departure === "pending") flags.push("Still in");
   return flags;
 }
 
@@ -41,8 +56,15 @@ function matchesFilter(
   if (filter === "all") return true;
   if (filter === "present") return present;
   if (filter === "absent") return !present;
-  if (filter === "on-time") return present && person.arrival === "on-time";
-  if (filter === "late") return present && person.arrival === "late";
+  if (filter === "on-time") {
+    if (!present || workdayLateOn(person, source)) return false;
+    return source === "bio"
+      ? person.bioArrival === "on-time"
+      : source === "tivazo"
+        ? person.tivazoArrival === "on-time"
+        : person.arrival === "on-time";
+  }
+  if (filter === "late") return workdayLateOn(person, source);
   return true;
 }
 
@@ -270,10 +292,13 @@ export function DashboardClockInsModal({
           ) : (
             <ul className="smp-coverage-list smp-clockins-list">
               {rows.map((person, index) => (
-                <li key={person.date ? `${person.id}:${person.date}` : person.id || `${person.email}:${index}`}>
+                <li
+                  key={person.date ? `${person.id}:${person.date}` : person.id || `${person.email}:${index}`}
+                >
                   <button
                     type="button"
                     className="smp-clockins-row"
+                    data-late={workdayLateOn(person, source) ? "true" : undefined}
                     data-clickable={onSelect ? "true" : undefined}
                     onClick={() => onSelect?.(person)}
                   >

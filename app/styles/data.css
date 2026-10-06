@@ -2915,6 +2915,12 @@ a.smp-coverage-row[data-clickable="true"] {
   gap: var(--smp-space-3);
 }
 
+.smp-dashboard-source__range-note {
+  max-width: 34rem;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
 .smp-dashboard-source-stat {
   min-height: 76px;
   padding: 12px 12px 10px;
@@ -3984,6 +3990,16 @@ a.smp-clockins-spot[data-clickable="true"]:hover {
   background: var(--smp-hover-soft);
 }
 
+.smp-clockins-row[data-late="true"],
+.smp-clockins-row[data-clickable="true"][data-late="true"] {
+  background: color-mix(in srgb, var(--smp-stat-rose) 18%, var(--smp-surface));
+  box-shadow: inset 4px 0 0 color-mix(in srgb, var(--smp-stat-rose) 82%, var(--smp-border));
+}
+
+.smp-clockins-row[data-clickable="true"][data-late="true"]:hover {
+  background: color-mix(in srgb, var(--smp-stat-rose) 24%, var(--smp-surface));
+}
+
 .smp-clockins-row__time {
   min-width: 0;
   overflow: hidden;
@@ -4434,6 +4450,15 @@ a.smp-period-days__punch[data-clickable="true"]:hover .smp-period-days__range {
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--smp-ink-tertiary) 22%, transparent);
 }
 
+.smp-period-days__row[data-late="true"][data-punch-source] {
+  background: color-mix(in srgb, var(--smp-stat-rose) 34%, var(--smp-surface));
+  box-shadow: inset 4px 0 0 color-mix(in srgb, var(--smp-stat-rose) 92%, var(--smp-border));
+}
+
+.smp-period-days__row[data-late="true"] .smp-period-days__range {
+  color: color-mix(in srgb, var(--smp-stat-rose) 88%, var(--smp-ink-primary));
+}
+
 .smp-period-days__punch[data-empty="true"] {
   opacity: 0.92;
 }
@@ -4666,6 +4691,10 @@ button.smp-punch-cell[data-interactive="true"]:focus-visible {
 .smp-punch-cell__value[data-empty="true"] {
   color: var(--smp-ink-tertiary);
   font-weight: var(--smp-weight-medium);
+}
+
+.smp-punch-cell__value[data-precision="true"] {
+  font-size: 15px;
 }
 
 .smp-punch-cell__meta {

@@ -290,16 +290,26 @@ export type DashboardRosterPerson = {
   lastScreenshot: string;
   trackedSeconds: number;
   trackedLabel: string;
-  /** Tracked Present person-days when roster row is range-aggregated (Tivazo). */
+  /** Present person-days when roster row is range-aggregated. */
   presentDays?: number;
-  /** Present status days in range (for ranking); may exceed presentDays when some Present days have no tracked time. */
+  /** Present status days in range; may exceed presentDays when some Present days have no tracked time. */
   attendedDays?: number;
-  /** Absent (non-rest) person-days when roster row is range-aggregated. */
+  /** Absent workdays when roster row is range-aggregated. */
   absentDays?: number;
-  /** Sum of first-in minutes across Present days (range aggregate) for day-weighted Avg Clock-in. */
+  /** Leave days when roster row is range-aggregated. */
+  leaveDays?: number;
+  /** Sum of first-in minutes across all Present days (range aggregate). */
   clockInSumMinutes?: number;
   /** Count of Present days that contributed to clockInSumMinutes. */
   clockInSamples?: number;
+  /** Sum of first-in minutes strictly before 08:00 across Present days. */
+  clockInBeforeEightSumMinutes?: number;
+  /** Count of Present days with first-in strictly before 08:00. */
+  clockInBeforeEightSamples?: number;
+  /** Sum of confirmed check-out minutes across Present days (range aggregate). */
+  clockOutSumMinutes?: number;
+  /** Count of Present days with a confirmed check-out (range aggregate). */
+  clockOutSamples?: number;
   designation: string;
   joinDate: string;
   date?: string;
@@ -668,41 +678,13 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
   reload: () => void;
 } {
   const [epoch, setEpoch] = useState(0);
-  const [seenEpoch, setSeenEpoch] = useState(0);
-  const [state, setState] = useState(() => snapshotState<T>(url));
-  const urlRef = useRef(url);
+  const [state, setState] = useState(() => ({ ...snapshotState<T>(url), epoch }));
   const fetchedRef = useRef({ url, epoch: -1 });
-  const generationRef = useRef(0);
-  const previousDataRef = useRef<T | null>(state.data);
-
-  if (state.data) previousDataRef.current = state.data;
-
-  if (state.url !== url) {
-    const next = snapshotState<T>(url);
-    if (next.data) {
-      setState(next);
-    } else if (previousDataRef.current) {
-      // Keep last good payload visible while the new range loads (no blank/freeze).
-      setState({
-        ...next,
-        data: previousDataRef.current,
-        loading: false,
-        refreshing: true,
-      });
-    } else {
-      setState(next);
-    }
-  } else if (epoch !== seenEpoch) {
-    setSeenEpoch(epoch);
-    if (url) setState(snapshotState<T>(url, true));
-  }
 
   const reload = useCallback(() => setEpoch((value) => value + 1), []);
 
   useEffect(() => {
-    urlRef.current = url;
     if (!url) {
-      generationRef.current += 1;
       fetchedRef.current = { url, epoch };
       return;
     }
@@ -713,22 +695,18 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
       return;
     }
 
-    const generation = generationRef.current + 1;
-    generationRef.current = generation;
+    let active = true;
     loadQuery<T>(url, force)
       .then((data) => {
-        if (generation !== generationRef.current || urlRef.current !== url) return;
+        if (!active) return;
         fetchedRef.current = { url, epoch };
-        previousDataRef.current = data;
         // Defer heavy tree updates so preset clicks stay clickable while data commits.
         startTransition(() => {
-          setState({ url, data, error: null, loading: false, refreshing: false });
+          setState({ url, data, error: null, loading: false, refreshing: false, epoch });
         });
       })
       .catch((error: unknown) => {
-        if (generation !== generationRef.current || urlRef.current !== url || isAbortError(error)) {
-          return;
-        }
+        if (!active || isAbortError(error)) return;
         const nextError =
           error instanceof ApiError
             ? error
@@ -736,22 +714,35 @@ export function useQuery<T>(url: string | null): QueryState<T> & {
         startTransition(() => {
           setState((prev) => ({
             url,
-            data: prev.url === url ? prev.data : getCached<T>(url)?.data ?? previousDataRef.current,
+            data: prev.url === url ? prev.data : getCached<T>(url)?.data ?? null,
             error: nextError,
             loading: false,
             refreshing: false,
+            epoch,
           }));
         });
       });
+    return () => {
+      active = false;
+    };
   }, [url, epoch]);
 
   const cached = url ? getCached<T>(url) : null;
-  const data = state.url === url ? state.data : cached?.data ?? state.data;
+  const isCurrentState = state.url === url;
+  const data = isCurrentState ? state.data : cached?.data ?? null;
+  const isReloading = isCurrentState && state.epoch !== epoch;
   return {
     data,
-    error: state.url === url ? state.error : null,
-    loading: (state.url === url ? state.loading : !cached && !state.data) && !data,
-    refreshing: state.url === url ? state.refreshing : Boolean(data),
+    error: isCurrentState ? state.error : null,
+    loading:
+      Boolean(url) &&
+      (isCurrentState ? (isReloading ? !data : state.loading) : !cached) &&
+      !data,
+    refreshing: isCurrentState
+      ? isReloading
+        ? Boolean(data)
+        : state.refreshing
+      : Boolean(data && url && !peekFresh<T>(url)),
     reload,
   };
 }

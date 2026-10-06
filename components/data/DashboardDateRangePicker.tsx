@@ -50,8 +50,23 @@ function writeRangeUrl(pathname: string, start: string, end: string) {
   window.history.replaceState(window.history.state, "", next);
 }
 
+function useAppToday(): string {
+  const [today, setToday] = useState(isoDateInZone);
+
+  useEffect(() => {
+    const refreshToday = () => {
+      const current = isoDateInZone();
+      setToday((previous) => (previous === current ? previous : current));
+    };
+    const timer = setInterval(refreshToday, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return today;
+}
+
 export function useDashboardDateRange() {
-  const today = useMemo(() => isoDateInZone(), []);
+  const today = useAppToday();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const startParam = searchParams.get("startDate") || "";
@@ -111,7 +126,7 @@ export function DashboardDateRangePicker({
   end: string;
   onChange: (start: string, end: string) => void;
 }) {
-  const today = useMemo(() => isoDateInZone(), []);
+  const today = useAppToday();
   const presets = useMemo(() => datePresets(today), [today]);
   const active = matchDatePreset(start, end, today);
   const activeLabel = presets.find((item) => item.id === active)?.label || "Custom";

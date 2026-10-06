@@ -14,6 +14,7 @@ import {
   parseISODate,
 } from "@/lib/datetime";
 import {
+  DASHBOARD_LATE_AFTER_MIN,
   formatMinutes,
   sourcePunchMinutes,
   uniqueWorkdayPeople,
@@ -101,7 +102,9 @@ function punchLabel(
   if (minutes == null) return head;
   const typical = formatMinutes(minutes);
   if (kind === "in") {
-    return minutes <= 7 * 60 + 15 ? `${head} · on time ${typical}` : `${head} · late ${typical}`;
+    return minutes < DASHBOARD_LATE_AFTER_MIN
+      ? `${head} · on time ${typical}`
+      : `${head} · late ${typical}`;
   }
   if (pending) return `${head} · still in`;
   return minutes >= 15 * 60 ? `${head} · till ${typical}` : `${head} · left ${typical}`;

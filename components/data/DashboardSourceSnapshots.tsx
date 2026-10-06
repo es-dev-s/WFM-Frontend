@@ -32,6 +32,7 @@ function SourcePanel({
   loading,
   skeletonCount,
   meta,
+  rangeStatusCounts,
   activeId,
   onOpen,
 }: {
@@ -41,6 +42,7 @@ function SourcePanel({
   loading: boolean;
   skeletonCount: number;
   meta: string;
+  rangeStatusCounts: boolean;
   activeId?: string;
   onOpen: (stat: MiniStat) => void;
 }) {
@@ -50,6 +52,11 @@ function SourcePanel({
         <div>
           <h2 className="smp-panel__title">{title}</h2>
           <p className="smp-panel__meta">{meta}</p>
+          {rangeStatusCounts ? (
+            <p className="smp-panel__meta smp-dashboard-source__range-note">
+              Unique people with each status on at least one included workday. Status counts can overlap; Total is unique people.
+            </p>
+          ) : null}
         </div>
         <Link className="smp-dashboard-source__link" href={href}>
           Open page
@@ -119,6 +126,7 @@ export function DashboardSourceSnapshots({
 }) {
   const [spec, setSpec] = useState<PeopleModalSpec | null>(null);
   const range = { startDate, endDate, teamId, memberId };
+  const rangeStatusCounts = startDate !== endDate;
   const bioNative = isBioTeam(teamId, bioPeople, bioTeams);
   const tivazoNative = isTivazoTeam(teamId, tivazoPeople, tivazoGroups);
   const bioLink = (view: string, kind: CardKind) =>
@@ -162,9 +170,9 @@ export function DashboardSourceSnapshots({
 
   const hints = useMemo(
     () => ({
-      present: "Present on this source for the selected range",
-      leave: "On leave for the selected range",
-      absent: "Absent on this source for the selected range",
+      present: "Present on this source on at least one included day",
+      leave: "On leave on at least one included day",
+      absent: "Absent on at least one included workday",
       all: "Everyone counted on this source",
       active: "Live Active on Tivazo",
       idle: "Live Idle on Tivazo",
@@ -182,6 +190,7 @@ export function DashboardSourceSnapshots({
         loading={biomaticLoading}
         skeletonCount={4}
         meta={dateRangeLabel}
+        rangeStatusCounts={rangeStatusCounts}
         activeId={spec?.id}
         onOpen={(stat) => {
           const focus = cardPeople(bioPeople, stat.kind);
@@ -204,6 +213,7 @@ export function DashboardSourceSnapshots({
         loading={tivazoLoading}
         skeletonCount={5}
         meta={dateRangeLabel}
+        rangeStatusCounts={rangeStatusCounts}
         activeId={spec?.id}
         onOpen={(stat) => {
           const focus = cardPeople(tivazoPeople, stat.kind);

@@ -13,7 +13,7 @@ import {
 import { isoDateInZone } from "@/lib/datetime";
 import { biomaticHref, peopleScopeParam, tivazoHref } from "@/lib/href";
 import {
-  LATE_AFTER_MIN,
+  DASHBOARD_LATE_AFTER_MIN,
   type ArrivalStatus,
   type DepartureStatus,
   type WorkdayPerson,
@@ -155,10 +155,18 @@ export function DashboardClockIns({
 
   const todayIso = typeof today === "string" && today ? today : isoDateInZone();
 
-  const allPeople = useMemo(() => mergeWorkdayPeople(bio, tivazo, today), [bio, tivazo, today]);
+  const allPeople = useMemo(
+    () => mergeWorkdayPeople(bio, tivazo, today, DASHBOARD_LATE_AFTER_MIN),
+    [bio, tivazo, today],
+  );
   const people = useMemo(() => {
     if (source === "all") return allPeople;
-    return mergeWorkdayPeople(source === "bio" ? bio : [], source === "tivazo" ? tivazo : [], today);
+    return mergeWorkdayPeople(
+      source === "bio" ? bio : [],
+      source === "tivazo" ? tivazo : [],
+      today,
+      DASHBOARD_LATE_AFTER_MIN,
+    );
   }, [allPeople, bio, tivazo, source, today]);
   const sourceName = source === "bio" ? "Biometrics" : source === "tivazo" ? "Tivazo" : "Combined";
   const focusedDay =
@@ -222,13 +230,25 @@ export function DashboardClockIns({
   const spotlight = useMemo(() => {
     if (!memberId.trim() || visible.length === 0) return null;
     if (visible.length === 1) return visible[0];
-    const ins = visible.map((person) => person.inMinutes).filter((value): value is number => value != null);
-    const outs = visible.map((person) => person.outMinutes).filter((value): value is number => value != null);
-    const inMinutes = ins.length ? ins.reduce((sum, value) => sum + value, 0) / ins.length : null;
+    const presentPeople = visible.filter((person) => workdayPresentOn(person, source));
+    const ins = presentPeople
+      .map((person) => person.inMinutes)
+      .filter((value): value is number => value != null);
+    const eligibleIns = ins.filter((value) => value < DASHBOARD_LATE_AFTER_MIN);
+    const outs = presentPeople
+      .map((person) => person.outMinutes)
+      .filter((value): value is number => value != null);
+    const inMinutes = eligibleIns.length
+      ? eligibleIns.reduce((sum, value) => sum + value, 0) / eligibleIns.length
+      : null;
     const outMinutes = outs.length ? outs.reduce((sum, value) => sum + value, 0) / outs.length : null;
     const first = visible[0];
     const arrival =
-      inMinutes == null ? "missing" : inMinutes > LATE_AFTER_MIN ? "late" : "on-time";
+      inMinutes == null
+        ? ins.length > 0
+          ? "late"
+          : "missing"
+        : "on-time";
     const departure =
       outMinutes == null
         ? "missing"
@@ -246,7 +266,23 @@ export function DashboardClockIns({
       bioPresent: visible.some((person) => person.bioPresent),
       tivazoPresent: visible.some((person) => person.tivazoPresent),
     } satisfies WorkdayPerson;
-  }, [memberId, visible]);
+  }, [memberId, visible, source]);
+  const spotlightHasLateDays = Boolean(
+    period === "range" &&
+      spotlight &&
+      visible.some(
+        (person) =>
+          workdayPresentOn(person, source) && arrivalOn(person, source) === "late",
+      ),
+  );
+  const spotlightHasOnTimeDays = Boolean(
+    period === "range" &&
+      spotlight &&
+      visible.some(
+        (person) =>
+          workdayPresentOn(person, source) && arrivalOn(person, source) === "on-time",
+      ),
+  );
 
   const range = {
     teamId: teamId || undefined,
@@ -463,7 +499,12 @@ export function DashboardClockIns({
     const sourceBio = source === "tivazo" ? [] : bioRows;
     const sourceTivazo = source === "bio" ? [] : tivazoRows;
     const merged = scopeFetchedPeople(
-      mergeWorkdayPeople(sourceBio, sourceTivazo, fetchDay === todayIso ? todayIso : false),
+      mergeWorkdayPeople(
+        sourceBio,
+        sourceTivazo,
+        fetchDay === todayIso ? todayIso : false,
+        DASHBOARD_LATE_AFTER_MIN,
+      ),
     );
     setDayModal((prev) => {
       if (!prev || prev.date !== fetchDay) return prev;
@@ -567,7 +608,15 @@ export function DashboardClockIns({
               </div>
               <div>
                 <dt>Arrival</dt>
-                <dd>{spotlight.arrival === "late" ? "Late after 7:15" : spotlight.arrival === "on-time" ? "On time" : "No in"}</dd>
+                <dd>
+                  {spotlightHasLateDays && spotlightHasOnTimeDays
+                    ? "Late on some days"
+                    : spotlight.arrival === "late"
+                      ? "Late (8:00 AM or later)"
+                      : spotlight.arrival === "on-time"
+                        ? "On time"
+                        : "No in"}
+                </dd>
               </div>
               <div>
                 <dt>Leave</dt>
@@ -608,7 +657,7 @@ export function DashboardClockIns({
             />
             <Chip
               label="On time"
-              hint={period === "range" ? "Person-days · in by 7:15" : "In by 7:15"}
+              hint={period === "range" ? "Person-days · before 8:00" : "Before 8:00"}
               value={onTime.length}
               tone="ok"
               active={peopleSpec?.id === "on-time"}
@@ -616,14 +665,14 @@ export function DashboardClockIns({
                 openChip(
                   "on-time",
                   `${sourceName} · On time`,
-                  period === "range" ? "Person-days in by 7:15" : "In by 7:15",
+                  period === "range" ? "Person-days before 8:00" : "Before 8:00",
                   onTime,
                 )
               }
             />
             <Chip
               label="Late"
-              hint={period === "range" ? "Person-days · after 7:15" : "After 7:15"}
+              hint={period === "range" ? "Person-days · 8:00 AM or later" : "8:00 AM or later"}
               value={late.length}
               tone="late"
               active={peopleSpec?.id === "late"}
@@ -631,7 +680,7 @@ export function DashboardClockIns({
                 openChip(
                   "late",
                   `${sourceName} · Late`,
-                  period === "range" ? "Person-days after 7:15" : "After 7:15",
+                  period === "range" ? "Person-days at 8:00 AM or later" : "At 8:00 AM or later",
                   late,
                 )
               }
@@ -653,14 +702,14 @@ export function DashboardClockIns({
             />
             <Chip
               label="Full day"
-              hint={period === "range" ? "Person-days · full day" : "In by 7:15 · till 3:00"}
+              hint={period === "range" ? "Person-days · full day" : "Before 8:00 · till 3:00"}
               value={fullDay.length}
               active={peopleSpec?.id === "full-day"}
               onOpen={() =>
                 openChip(
                   "full-day",
                   `${sourceName} · Full day`,
-                  period === "range" ? "Person-days in by 7:15 and till 3:00" : "Till 3:00",
+                  period === "range" ? "Person-days before 8:00 and till 3:00" : "Before 8:00 · till 3:00",
                   fullDay,
                 )
               }
