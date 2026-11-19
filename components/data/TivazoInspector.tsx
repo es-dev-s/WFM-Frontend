@@ -152,14 +152,21 @@ export function TivazoInspector({
                               outTime: row.outTime,
                             });
                             return (
-                              <span className="smp-inspector__sub">
+                              <span
+                                className="smp-inspector__sub"
+                                title={
+                                  m.trackedLabel !== "—"
+                                    ? `Target: ${m.targetLabel} (${m.metricName}) · Actual: ${m.trackedLabel} · Variance: ${m.varianceLabel} · ${m.statusLabel}`
+                                    : undefined
+                                }
+                              >
                                 {m.trackedLabel !== "—"
-                                  ? `Tracked ${m.trackedLabel}`
+                                  ? `Tracked ${m.trackedLabel} (Target ${m.targetLabel})`
                                   : "Tracked —"}
                                 {m.trackedLabel !== "—"
                                   ? m.met
-                                    ? " · Met"
-                                    : ` · Short ${m.shortfallLabel}`
+                                    ? ` · Met (${m.varianceLabel})`
+                                    : ` · ${m.shortfallLabel} needed (${m.varianceLabel})`
                                   : ""}
                               </span>
                             );

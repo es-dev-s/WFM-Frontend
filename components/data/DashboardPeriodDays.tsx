@@ -567,16 +567,31 @@ export function DashboardPeriodDays({
             <span>Date</span>
             {showName ? <span>Name</span> : null}
             {source !== "tivazo" ? (
-              <span className="smp-period-days__col-head" data-source="bio">
+              <span
+                className="smp-period-days__col-head"
+                data-source="bio"
+                title="Biometrics Attendance (Shift Target: 7h 5m)"
+              >
                 Bio
               </span>
             ) : null}
             {source !== "bio" ? (
-              <span className="smp-period-days__col-head" data-source="tivazo">
+              <span
+                className="smp-period-days__col-head"
+                data-source="tivazo"
+                title="Tivazo Punches"
+              >
                 Tivazo
               </span>
             ) : null}
-            {source !== "bio" ? <span className="smp-period-days__col-head">Tracked</span> : null}
+            {source !== "bio" ? (
+              <span
+                className="smp-period-days__col-head"
+                title="Active Tracked Time (Target: 6h 30m)"
+              >
+                Tracked
+              </span>
+            ) : null}
           </div>
           <ul className="smp-period-days__list">
             {painted.map((row) => {
@@ -663,7 +678,14 @@ export function DashboardPeriodDays({
                           outTime: row.tivazoOut || (source === "all" ? row.bioOut : ""),
                         });
                         const body = (
-                          <span className="smp-period-days__metrics">
+                          <span
+                            className="smp-period-days__metrics"
+                            title={
+                              m.trackedLabel !== "—"
+                                ? `Target: ${m.targetLabel} (${m.metricName}) · Actual: ${m.trackedLabel} · Variance: ${m.varianceLabel} · ${m.statusLabel}`
+                                : undefined
+                            }
+                          >
                             <span
                               className="smp-period-days__tracked-main"
                               data-empty={m.trackedLabel === "—" ? "true" : undefined}
@@ -675,7 +697,9 @@ export function DashboardPeriodDays({
                                 className="smp-period-days__tracked-short"
                                 data-met={m.met ? "true" : undefined}
                               >
-                                {m.met ? "Met" : m.shortfallLabel}
+                                {m.met
+                                  ? `Met (${m.varianceLabel})`
+                                  : `${m.shortfallLabel} needed`}
                               </span>
                             ) : null}
                           </span>

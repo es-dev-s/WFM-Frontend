@@ -1,7 +1,7 @@
 import { StatusPill } from "@/components/data/StatusPill";
 import type { DailyLogRow, Member, MemberComposition } from "@/lib/api";
 import { formatInstantMs } from "@/lib/datetime";
-import { workdayTimeMetrics } from "@/lib/tracked-time";
+import { workdayTimeMetrics, type TrackedSource } from "@/lib/tracked-time";
 import type { ReactNode } from "react";
 
 export function dash(value: string | number | null | undefined): string {
@@ -206,9 +206,44 @@ export function RecordFacts({
   );
 }
 
-export function activityFactGroups(row: DailyLogRow): FactGroup[] {
+export function activityFactGroups(
+  row: DailyLogRow,
+  source: TrackedSource = "auto",
+): FactGroup[] {
   const groupNames = joinGroups(row.groups, row.group);
   const primaryGroup = dash(row.group);
+  const metrics = workdayTimeMetrics({
+    source,
+    trackedTime: row.trackedTime,
+    inTime: row.inTime,
+    outTime: row.outTime,
+  });
+
+  const hasPunch = Boolean(row.inTime || row.outTime);
+  const hasTracked = Boolean(
+    row.trackedTime &&
+      row.trackedTime !== "—" &&
+      row.trackedTime !== "0:00:00" &&
+      row.trackedTime !== "0h",
+  );
+
+  const bioMetrics =
+    source === "tivazo" && hasPunch
+      ? workdayTimeMetrics({
+          source: "bio",
+          inTime: row.inTime,
+          outTime: row.outTime,
+        })
+      : null;
+
+  const tivazoMetrics =
+    source === "bio" && hasTracked
+      ? workdayTimeMetrics({
+          source: "tivazo",
+          trackedTime: row.trackedTime,
+        })
+      : null;
+
   return [
     {
       title: "Assignment",
@@ -223,30 +258,102 @@ export function activityFactGroups(row: DailyLogRow): FactGroup[] {
       ],
     },
     {
+      title: "Target & Performance",
+      items: [
+        {
+          label: "Target metric",
+          value: `${metrics.metricName} (Target: ${metrics.targetLabel})`,
+          keep: true,
+        },
+        {
+          label: "Target",
+          value: metrics.targetLabel,
+          keep: true,
+        },
+        {
+          label: "Actual value",
+          value: metrics.trackedLabel,
+          keep: true,
+        },
+        {
+          label: "Variance",
+          value: metrics.varianceLabel,
+          keep: true,
+        },
+        {
+          label: "Target status",
+          value:
+            metrics.trackedSeconds > 0
+              ? metrics.met
+                ? "Target Met"
+                : "Target Not Met"
+              : "—",
+          keep: true,
+        },
+        {
+          label: "Time needed",
+          value:
+            metrics.trackedSeconds > 0
+              ? metrics.met
+                ? "Goal met"
+                : `${metrics.shortfallLabel} needed`
+              : "—",
+          keep: true,
+        },
+        ...(bioMetrics && bioMetrics.trackedSeconds > 0
+          ? [
+              {
+                label: "Shift presence (Bio)",
+                value: `Actual: ${bioMetrics.trackedLabel} vs Target: ${bioMetrics.targetLabel} (${bioMetrics.met ? "Met" : "Not met"}, Variance: ${bioMetrics.varianceLabel})`,
+                keep: true,
+              },
+            ]
+          : []),
+        ...(tivazoMetrics && tivazoMetrics.trackedSeconds > 0
+          ? [
+              {
+                label: "Active tracked (Tivazo)",
+                value: `Actual: ${tivazoMetrics.trackedLabel} vs Target: ${tivazoMetrics.targetLabel} (${tivazoMetrics.met ? "Met" : "Not met"}, Variance: ${tivazoMetrics.varianceLabel})`,
+                keep: true,
+              },
+            ]
+          : []),
+      ],
+    },
+    {
       title: "This day",
-      items: (() => {
-        const metrics = workdayTimeMetrics({
-          source: "auto",
-          trackedTime: row.trackedTime,
-          inTime: row.inTime,
-          outTime: row.outTime,
-        });
-        return [
-          { label: "Date", value: dash(row.date), keep: true },
-          { label: "Day", value: optionalStatus(row.status), keep: true },
-          { label: "In", value: dash(row.inTime), keep: true },
-          { label: "Out", value: dash(row.outTime), keep: true },
-          { label: "Tracked", value: metrics.trackedLabel, keep: true },
-          {
-            label: "Shortfall",
-            value: metrics.shortfallLabel,
-            keep: true,
-          },
-          { label: "Manual", value: dash(row.manualTime), keep: true },
-          { label: "Break", value: dash(row.breakTime), keep: true },
-          { label: "Clocked in", value: formatInstantMs(row.clockedInMs), keep: true },
-        ];
-      })(),
+      items: [
+        { label: "Date", value: dash(row.date), keep: true },
+        { label: "Day", value: optionalStatus(row.status), keep: true },
+        { label: "In", value: dash(row.inTime), keep: true },
+        { label: "Out", value: dash(row.outTime), keep: true },
+        { label: "Actual tracked", value: metrics.trackedLabel, keep: true },
+        { label: "Goal time", value: metrics.targetLabel, keep: true },
+        { label: "Variance", value: metrics.varianceLabel, keep: true },
+        {
+          label: "Target status",
+          value:
+            metrics.trackedSeconds > 0
+              ? metrics.met
+                ? "Met"
+                : "Not met"
+              : "—",
+          keep: true,
+        },
+        {
+          label: "Time needed",
+          value:
+            metrics.trackedSeconds > 0
+              ? metrics.met
+                ? "Goal met"
+                : `${metrics.shortfallLabel} needed`
+              : "—",
+          keep: true,
+        },
+        { label: "Manual", value: dash(row.manualTime), keep: true },
+        { label: "Break", value: dash(row.breakTime), keep: true },
+        { label: "Clocked in", value: formatInstantMs(row.clockedInMs), keep: true },
+      ],
     },
     {
       title: "Account",

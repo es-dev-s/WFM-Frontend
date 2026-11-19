@@ -2,9 +2,12 @@
 
 import type { DashboardMemberFocus } from "@/lib/api";
 import { workdayTimeMetrics } from "@/lib/tracked-time";
+import type { ReactNode } from "react";
 
-function fact(value: string): string {
-  return value.trim() || "—";
+function fact(value: ReactNode): ReactNode {
+  if (value == null) return "—";
+  if (typeof value === "string") return value.trim() || "—";
+  return value;
 }
 
 function displayStatus(value: string): string {
@@ -31,7 +34,11 @@ function SourceColumn({
   title: string;
   available: boolean;
   status: string;
-  rows: { label: string; value: string }[];
+  rows: {
+    label: string;
+    value: ReactNode;
+    tone?: "ok" | "warn" | "bad" | "neutral";
+  }[];
 }) {
   const label = available ? displayStatus(status) : "Not linked";
   const tone = available ? statusTone(label) : "neutral";
@@ -53,7 +60,17 @@ function SourceColumn({
           {rows.map((row) => (
             <div key={row.label} className="smp-dashboard-member__fact">
               <dt>{row.label}</dt>
-              <dd>{fact(row.value)}</dd>
+              <dd
+                className={
+                  row.tone === "ok"
+                    ? "smp-cell-text--ok"
+                    : row.tone === "bad"
+                      ? "smp-cell-text--bad"
+                      : undefined
+                }
+              >
+                {fact(row.value)}
+              </dd>
             </div>
           ))}
         </dl>
@@ -109,8 +126,33 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
           rows={[
             { label: "In", value: member.biometrics.inTime },
             { label: "Out", value: member.biometrics.outTime },
-            { label: "Tracked", value: bioMetrics.trackedLabel },
-            { label: "Shortfall", value: bioMetrics.shortfallLabel },
+            { label: "Goal time", value: bioMetrics.targetLabel },
+            { label: "Actual shift", value: bioMetrics.trackedLabel },
+            {
+              label: "Time needed",
+              value:
+                bioMetrics.trackedSeconds > 0
+                  ? bioMetrics.met
+                    ? "Goal met"
+                    : `${bioMetrics.shortfallLabel} needed`
+                  : "—",
+              tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
+            },
+            {
+              label: "Variance",
+              value: bioMetrics.varianceLabel,
+              tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
+            },
+            {
+              label: "Target status",
+              value:
+                bioMetrics.trackedSeconds > 0
+                  ? bioMetrics.met
+                    ? "Met"
+                    : "Not met"
+                  : "—",
+              tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
+            },
             { label: "Team", value: member.biometrics.department },
             { label: "Role", value: member.biometrics.designation },
           ]}
@@ -122,8 +164,33 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
           rows={[
             { label: "In", value: member.tivazo.inTime },
             { label: "Out", value: member.tivazo.outTime },
-            { label: "Tracked", value: tivazoMetrics.trackedLabel },
-            { label: "Shortfall", value: tivazoMetrics.shortfallLabel },
+            { label: "Goal time", value: tivazoMetrics.targetLabel },
+            { label: "Actual tracked", value: tivazoMetrics.trackedLabel },
+            {
+              label: "Time needed",
+              value:
+                tivazoMetrics.trackedSeconds > 0
+                  ? tivazoMetrics.met
+                    ? "Goal met"
+                    : `${tivazoMetrics.shortfallLabel} needed`
+                  : "—",
+              tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
+            },
+            {
+              label: "Variance",
+              value: tivazoMetrics.varianceLabel,
+              tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
+            },
+            {
+              label: "Target status",
+              value:
+                tivazoMetrics.trackedSeconds > 0
+                  ? tivazoMetrics.met
+                    ? "Met"
+                    : "Not met"
+                  : "—",
+              tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
+            },
             { label: "Team", value: member.tivazo.group },
             { label: "Role", value: member.tivazo.designation },
           ]}

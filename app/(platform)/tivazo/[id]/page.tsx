@@ -7,6 +7,7 @@ import { StatusPill } from "@/components/data/StatusPill";
 import { PageMeta } from "@/components/layout/PageMeta";
 import { type DailyLogRow, useQuery, withQuery } from "@/lib/api";
 import { readParamId } from "@/lib/href";
+import { workdayTimeMetrics } from "@/lib/tracked-time";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 
@@ -18,7 +19,20 @@ export default function TivazoActivityPage() {
   );
   const row = record.data;
   const groups = useMemo(
-    () => (row ? activityFactGroups(row) : []),
+    () => (row ? activityFactGroups(row, "tivazo") : []),
+    [row],
+  );
+
+  const metrics = useMemo(
+    () =>
+      row
+        ? workdayTimeMetrics({
+            source: "tivazo",
+            trackedTime: row.trackedTime,
+            inTime: row.inTime,
+            outTime: row.outTime,
+          })
+        : null,
     [row],
   );
 
@@ -37,7 +51,7 @@ export default function TivazoActivityPage() {
         onRetry={record.reload}
         label="activity"
       >
-        {row ? (
+        {row && metrics ? (
           <>
             <RecordHero
               name={row.name}
@@ -54,6 +68,20 @@ export default function TivazoActivityPage() {
                   ) : null}
                 </>
               }
+              counts={[
+                { label: "Target (Active)", value: metrics.targetLabel },
+                { label: "Actual Tracked", value: metrics.trackedLabel },
+                { label: "Variance", value: metrics.varianceLabel },
+                {
+                  label: "Target Status",
+                  value:
+                    metrics.trackedSeconds > 0
+                      ? metrics.met
+                        ? "Met"
+                        : "Not met"
+                      : "—",
+                },
+              ]}
             />
             <RecordSheet groups={groups} />
           </>

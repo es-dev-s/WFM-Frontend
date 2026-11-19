@@ -77,8 +77,8 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   },
   {
     id: "tracked",
-    header: "Tracked",
-    width: "88px",
+    header: "Actual Shift",
+    width: "96px",
     align: "right",
     priority: 1,
     render: (row) => {
@@ -92,8 +92,8 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     },
   },
   {
-    id: "shortfall",
-    header: "Shortfall",
+    id: "variance",
+    header: "Variance",
     width: "88px",
     align: "right",
     priority: 2,
@@ -104,7 +104,34 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
         inTime: row.inTime,
         outTime: row.outTime,
       });
-      return <CellText value={m.shortfallLabel} tone={m.met ? "ok" : "primary"} />;
+      return <CellText value={m.varianceLabel} tone={m.met ? "ok" : "primary"} />;
+    },
+  },
+  {
+    id: "shortfall",
+    header: "Time Needed",
+    width: "96px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return (
+        <CellText
+          value={
+            m.trackedSeconds > 0
+              ? m.met
+                ? "Met"
+                : `${m.shortfallLabel} needed`
+              : "—"
+          }
+          tone={m.met ? "ok" : "primary"}
+        />
+      );
     },
   },
 ];
@@ -184,8 +211,8 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   },
   {
     id: "tracked",
-    header: "Tracked",
-    width: "88px",
+    header: "Actual Tracked",
+    width: "104px",
     align: "right",
     priority: 1,
     render: (row) => {
@@ -199,8 +226,8 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     },
   },
   {
-    id: "shortfall",
-    header: "Shortfall",
+    id: "variance",
+    header: "Variance",
     width: "88px",
     align: "right",
     priority: 2,
@@ -211,7 +238,34 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
         inTime: row.inTime,
         outTime: row.outTime,
       });
-      return <CellText value={m.shortfallLabel} tone={m.met ? "ok" : "primary"} />;
+      return <CellText value={m.varianceLabel} tone={m.met ? "ok" : "primary"} />;
+    },
+  },
+  {
+    id: "shortfall",
+    header: "Time Needed",
+    width: "96px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "tivazo",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return (
+        <CellText
+          value={
+            m.trackedSeconds > 0
+              ? m.met
+                ? "Met"
+                : `${m.shortfallLabel} needed`
+              : "—"
+          }
+          tone={m.met ? "ok" : "primary"}
+        />
+      );
     },
   },
   {
@@ -383,8 +437,8 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
   },
   {
     id: "tracked",
-    header: "Tracked",
-    width: "88px",
+    header: "Actual Shift",
+    width: "96px",
     align: "right",
     priority: 1,
     render: (row) => {
@@ -397,8 +451,8 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
     },
   },
   {
-    id: "shortfall",
-    header: "Shortfall",
+    id: "variance",
+    header: "Variance",
     width: "88px",
     align: "right",
     priority: 2,
@@ -408,7 +462,33 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
         inTime: row.inTime,
         outTime: row.outTime,
       });
-      return <CellText value={m.shortfallLabel} tone={m.met ? "ok" : "primary"} />;
+      return <CellText value={m.varianceLabel} tone={m.met ? "ok" : "primary"} />;
+    },
+  },
+  {
+    id: "shortfall",
+    header: "Time Needed",
+    width: "96px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return (
+        <CellText
+          value={
+            m.trackedSeconds > 0
+              ? m.met
+                ? "Met"
+                : `${m.shortfallLabel} needed`
+              : "—"
+          }
+          tone={m.met ? "ok" : "primary"}
+        />
+      );
     },
   },
 ];

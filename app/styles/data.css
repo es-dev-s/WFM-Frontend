@@ -4504,6 +4504,10 @@ a.smp-period-days__punch[data-clickable="true"]:hover .smp-period-days__range {
   color: color-mix(in srgb, var(--smp-stat-teal, #0f766e) 80%, var(--smp-ink-secondary));
 }
 
+.smp-period-days__tracked-short[data-met="false"] {
+  color: color-mix(in srgb, var(--smp-stat-rose, #e11d48) 85%, var(--smp-ink-secondary));
+}
+
 a.smp-period-days__tracked[data-clickable="true"]:hover .smp-period-days__tracked-main {
   color: var(--smp-accent);
 }
@@ -7181,6 +7185,16 @@ button.smp-punch-cell[data-interactive="true"]:focus-visible {
 /* Thin density + tracked met state */
 .smp-cell-text--ok {
   color: var(--smp-stat-teal);
+  font-weight: var(--smp-weight-medium);
+}
+
+.smp-cell-text--bad {
+  color: var(--smp-stat-rose);
+  font-weight: var(--smp-weight-medium);
+}
+
+.smp-cell-text--warn {
+  color: var(--smp-stat-orange);
   font-weight: var(--smp-weight-medium);
 }
 
