@@ -156,7 +156,7 @@ export function TivazoInspector({
                                 className="smp-inspector__sub"
                                 title={
                                   m.trackedLabel !== "—"
-                                    ? `Target: ${m.targetLabel} (${m.metricName}) · Actual: ${m.trackedLabel} · Variance: ${m.varianceLabel} · ${m.statusLabel}`
+                                    ? `Target: ${m.targetLabel} (${m.metricName}) · Actual: ${m.trackedLabel} · ${m.statusLabel}`
                                     : undefined
                                 }
                               >
@@ -165,8 +165,8 @@ export function TivazoInspector({
                                   : "Tracked —"}
                                 {m.trackedLabel !== "—"
                                   ? m.met
-                                    ? ` · Met (${m.varianceLabel})`
-                                    : ` · ${m.shortfallLabel} needed (${m.varianceLabel})`
+                                    ? " · Met"
+                                    : ` · ${m.shortfallLabel} needed`
                                   : ""}
                               </span>
                             );

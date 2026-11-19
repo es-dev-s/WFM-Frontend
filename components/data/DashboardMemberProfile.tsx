@@ -139,11 +139,6 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
               tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
             },
             {
-              label: "Variance",
-              value: bioMetrics.varianceLabel,
-              tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
-            },
-            {
               label: "Target status",
               value:
                 bioMetrics.trackedSeconds > 0
@@ -174,11 +169,6 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
                     ? "Goal met"
                     : `${tivazoMetrics.shortfallLabel} needed`
                   : "—",
-              tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
-            },
-            {
-              label: "Variance",
-              value: tivazoMetrics.varianceLabel,
               tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
             },
             {

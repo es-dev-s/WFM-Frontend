@@ -92,22 +92,6 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     },
   },
   {
-    id: "variance",
-    header: "Variance",
-    width: "88px",
-    align: "right",
-    priority: 2,
-    render: (row) => {
-      const m = workdayTimeMetrics({
-        source: "bio",
-        trackedTime: row.trackedTime,
-        inTime: row.inTime,
-        outTime: row.outTime,
-      });
-      return <CellText value={m.varianceLabel} tone={m.met ? "ok" : "primary"} />;
-    },
-  },
-  {
     id: "shortfall",
     header: "Time Needed",
     width: "96px",
@@ -223,22 +207,6 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
         outTime: row.outTime,
       });
       return <CellText value={m.trackedLabel} />;
-    },
-  },
-  {
-    id: "variance",
-    header: "Variance",
-    width: "88px",
-    align: "right",
-    priority: 2,
-    render: (row) => {
-      const m = workdayTimeMetrics({
-        source: "tivazo",
-        trackedTime: row.trackedTime,
-        inTime: row.inTime,
-        outTime: row.outTime,
-      });
-      return <CellText value={m.varianceLabel} tone={m.met ? "ok" : "primary"} />;
     },
   },
   {
@@ -448,21 +416,6 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
         outTime: row.outTime,
       });
       return <CellText value={m.trackedLabel} />;
-    },
-  },
-  {
-    id: "variance",
-    header: "Variance",
-    width: "88px",
-    align: "right",
-    priority: 2,
-    render: (row) => {
-      const m = workdayTimeMetrics({
-        source: "bio",
-        inTime: row.inTime,
-        outTime: row.outTime,
-      });
-      return <CellText value={m.varianceLabel} tone={m.met ? "ok" : "primary"} />;
     },
   },
   {

@@ -71,7 +71,6 @@ export default function TivazoActivityPage() {
               counts={[
                 { label: "Target (Active)", value: metrics.targetLabel },
                 { label: "Actual Tracked", value: metrics.trackedLabel },
-                { label: "Variance", value: metrics.varianceLabel },
                 {
                   label: "Target Status",
                   value:

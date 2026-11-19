@@ -72,7 +72,6 @@ export default function BiomaticLogPage() {
               counts={[
                 { label: "Target (Shift)", value: metrics.targetLabel },
                 { label: "Actual Shift", value: metrics.trackedLabel },
-                { label: "Variance", value: metrics.varianceLabel },
                 {
                   label: "Target Status",
                   value:

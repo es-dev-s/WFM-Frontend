@@ -682,7 +682,7 @@ export function DashboardPeriodDays({
                             className="smp-period-days__metrics"
                             title={
                               m.trackedLabel !== "—"
-                                ? `Target: ${m.targetLabel} (${m.metricName}) · Actual: ${m.trackedLabel} · Variance: ${m.varianceLabel} · ${m.statusLabel}`
+                                ? `Target: ${m.targetLabel} (${m.metricName}) · Actual: ${m.trackedLabel} · ${m.statusLabel}`
                                 : undefined
                             }
                           >
@@ -697,9 +697,7 @@ export function DashboardPeriodDays({
                                 className="smp-period-days__tracked-short"
                                 data-met={m.met ? "true" : undefined}
                               >
-                                {m.met
-                                  ? `Met (${m.varianceLabel})`
-                                  : `${m.shortfallLabel} needed`}
+                                {m.met ? "Met" : `${m.shortfallLabel} needed`}
                               </span>
                             ) : null}
                           </span>

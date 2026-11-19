@@ -276,11 +276,6 @@ export function activityFactGroups(
           keep: true,
         },
         {
-          label: "Variance",
-          value: metrics.varianceLabel,
-          keep: true,
-        },
-        {
           label: "Target status",
           value:
             metrics.trackedSeconds > 0
@@ -304,7 +299,7 @@ export function activityFactGroups(
           ? [
               {
                 label: "Shift presence (Bio)",
-                value: `Actual: ${bioMetrics.trackedLabel} vs Target: ${bioMetrics.targetLabel} (${bioMetrics.met ? "Met" : "Not met"}, Variance: ${bioMetrics.varianceLabel})`,
+                value: `Actual: ${bioMetrics.trackedLabel} vs Target: ${bioMetrics.targetLabel} (${bioMetrics.met ? "Met" : "Not met"})`,
                 keep: true,
               },
             ]
@@ -313,7 +308,7 @@ export function activityFactGroups(
           ? [
               {
                 label: "Active tracked (Tivazo)",
-                value: `Actual: ${tivazoMetrics.trackedLabel} vs Target: ${tivazoMetrics.targetLabel} (${tivazoMetrics.met ? "Met" : "Not met"}, Variance: ${tivazoMetrics.varianceLabel})`,
+                value: `Actual: ${tivazoMetrics.trackedLabel} vs Target: ${tivazoMetrics.targetLabel} (${tivazoMetrics.met ? "Met" : "Not met"})`,
                 keep: true,
               },
             ]
@@ -329,7 +324,6 @@ export function activityFactGroups(
         { label: "Out", value: dash(row.outTime), keep: true },
         { label: "Actual tracked", value: metrics.trackedLabel, keep: true },
         { label: "Goal time", value: metrics.targetLabel, keep: true },
-        { label: "Variance", value: metrics.varianceLabel, keep: true },
         {
           label: "Target status",
           value:
