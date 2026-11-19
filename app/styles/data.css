@@ -7535,3 +7535,82 @@ button.smp-punch-cell[data-interactive="true"]:hover {
     transform: none;
   }
 }
+
+/* Transfer history */
+.smp-users-field textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 8px 10px;
+  border: 1px solid var(--smp-border);
+  border-radius: 10px;
+  background: var(--smp-surface);
+  color: var(--smp-ink-primary);
+  font: inherit;
+  font-size: var(--smp-text-sm);
+  resize: vertical;
+}
+
+.smp-users-field textarea:focus {
+  outline: none;
+  border-color: var(--smp-accent);
+  box-shadow: 0 0 0 3px var(--smp-focus-ring);
+}
+
+.smp-users-field textarea:disabled {
+  opacity: 0.72;
+  background: var(--smp-surface-sunken);
+}
+
+.smp-transfer-to {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--smp-accent);
+}
+
+.smp-transfer-note {
+  margin: 0;
+  padding: 8px 4px 0;
+  color: var(--smp-ink-tertiary);
+  font-size: 12px;
+}
+
+.smp-transfer-facts {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.smp-transfer-facts__row {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.smp-transfer-facts dt {
+  color: var(--smp-ink-tertiary);
+  font-size: 11px;
+  font-weight: var(--smp-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.smp-transfer-facts dd {
+  margin: 0;
+  color: var(--smp-ink-primary);
+  font-size: var(--smp-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.smp-transfer-facts dd[data-multiline="true"] {
+  white-space: pre-wrap;
+}
+
+.smp-transfer-facts__move {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--smp-ink-tertiary);
+}

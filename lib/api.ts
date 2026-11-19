@@ -191,6 +191,28 @@ export type AdminUser = {
   assignments: TeamAssignment[];
 };
 
+export type Transfer = {
+  id: string;
+  memberId: string;
+  employeeName: string;
+  employeeEmail: string;
+  previousTeam: string;
+  newTeam: string;
+  transferDate: string;
+  reason: string;
+  notes: string;
+  recordedBy: string;
+  createdAt: string;
+};
+
+export type TransferPage = {
+  items: Transfer[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+};
+
 export type MetricCard = {
   key: string;
   label: string;

@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Fingerprint, House, Settings, Timer, Users } from "lucide-react";
+import { ArrowLeftRight, Fingerprint, House, Settings, Timer, Users } from "lucide-react";
 
 export type NavItem = {
   label: string;
@@ -44,6 +44,7 @@ export const NAVIGATION: NavGroup[] = [
       { label: "Tivazo", href: "/tivazo", icon: Timer },
       { label: "Biometrics", href: "/biomatic", icon: Fingerprint },
       { label: "Users", href: "/users", icon: Users },
+      { label: "Transfer History", href: "/transfers", icon: ArrowLeftRight },
     ],
   },
 ];
@@ -51,10 +52,11 @@ export const NAVIGATION: NavGroup[] = [
 export function getPlatformNav(role?: "wfm" | "team_lead" | "hr"): NavGroup[] {
   return NAVIGATION.map((group) => ({
     ...group,
-    items:
-      role === "wfm"
-        ? group.items
-        : group.items.filter((item) => item.href !== "/users"),
+    items: group.items.filter((item) => {
+      if (item.href === "/users") return role === "wfm";
+      if (item.href === "/transfers") return role === "wfm" || role === "hr";
+      return true;
+    }),
   }));
 }
 
