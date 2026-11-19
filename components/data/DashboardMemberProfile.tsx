@@ -129,22 +129,12 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
             { label: "Goal time", value: bioMetrics.targetLabel },
             { label: "Actual shift", value: bioMetrics.trackedLabel },
             {
-              label: "Time needed",
-              value:
-                bioMetrics.trackedSeconds > 0
-                  ? bioMetrics.met
-                    ? "Goal met"
-                    : `${bioMetrics.shortfallLabel} needed`
-                  : "—",
-              tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
-            },
-            {
               label: "Target status",
               value:
                 bioMetrics.trackedSeconds > 0
                   ? bioMetrics.met
                     ? "Met"
-                    : "Not met"
+                    : `${bioMetrics.shortfallLabel} needed`
                   : "—",
               tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
             },
@@ -162,22 +152,12 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
             { label: "Goal time", value: tivazoMetrics.targetLabel },
             { label: "Actual tracked", value: tivazoMetrics.trackedLabel },
             {
-              label: "Time needed",
-              value:
-                tivazoMetrics.trackedSeconds > 0
-                  ? tivazoMetrics.met
-                    ? "Goal met"
-                    : `${tivazoMetrics.shortfallLabel} needed`
-                  : "—",
-              tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
-            },
-            {
               label: "Target status",
               value:
                 tivazoMetrics.trackedSeconds > 0
                   ? tivazoMetrics.met
                     ? "Met"
-                    : "Not met"
+                    : `${tivazoMetrics.shortfallLabel} needed`
                   : "—",
               tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
             },

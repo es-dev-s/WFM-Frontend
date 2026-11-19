@@ -78,7 +78,7 @@ export default function BiomaticLogPage() {
                     metrics.trackedSeconds > 0
                       ? metrics.met
                         ? "Met"
-                        : "Not met"
+                        : `${metrics.shortfallLabel} needed`
                       : "—",
                 },
               ]}

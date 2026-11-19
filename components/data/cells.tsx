@@ -280,17 +280,7 @@ export function activityFactGroups(
           value:
             metrics.trackedSeconds > 0
               ? metrics.met
-                ? "Target Met"
-                : "Target Not Met"
-              : "—",
-          keep: true,
-        },
-        {
-          label: "Time needed",
-          value:
-            metrics.trackedSeconds > 0
-              ? metrics.met
-                ? "Goal met"
+                ? "Met"
                 : `${metrics.shortfallLabel} needed`
               : "—",
           keep: true,
@@ -299,7 +289,7 @@ export function activityFactGroups(
           ? [
               {
                 label: "Shift presence (Bio)",
-                value: `Actual: ${bioMetrics.trackedLabel} vs Target: ${bioMetrics.targetLabel} (${bioMetrics.met ? "Met" : "Not met"})`,
+                value: `Actual: ${bioMetrics.trackedLabel} vs Target: ${bioMetrics.targetLabel} (${bioMetrics.met ? "Met" : `${bioMetrics.shortfallLabel} needed`})`,
                 keep: true,
               },
             ]
@@ -308,7 +298,7 @@ export function activityFactGroups(
           ? [
               {
                 label: "Active tracked (Tivazo)",
-                value: `Actual: ${tivazoMetrics.trackedLabel} vs Target: ${tivazoMetrics.targetLabel} (${tivazoMetrics.met ? "Met" : "Not met"})`,
+                value: `Actual: ${tivazoMetrics.trackedLabel} vs Target: ${tivazoMetrics.targetLabel} (${tivazoMetrics.met ? "Met" : `${tivazoMetrics.shortfallLabel} needed`})`,
                 keep: true,
               },
             ]
@@ -330,16 +320,6 @@ export function activityFactGroups(
             metrics.trackedSeconds > 0
               ? metrics.met
                 ? "Met"
-                : "Not met"
-              : "—",
-          keep: true,
-        },
-        {
-          label: "Time needed",
-          value:
-            metrics.trackedSeconds > 0
-              ? metrics.met
-                ? "Goal met"
                 : `${metrics.shortfallLabel} needed`
               : "—",
           keep: true,

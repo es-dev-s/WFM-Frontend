@@ -93,7 +93,7 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   },
   {
     id: "shortfall",
-    header: "Time Needed",
+    header: "Target Status",
     width: "96px",
     align: "right",
     priority: 2,
@@ -211,7 +211,7 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
   },
   {
     id: "shortfall",
-    header: "Time Needed",
+    header: "Target Status",
     width: "96px",
     align: "right",
     priority: 2,
@@ -420,7 +420,7 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
   },
   {
     id: "shortfall",
-    header: "Time Needed",
+    header: "Target Status",
     width: "96px",
     align: "right",
     priority: 2,

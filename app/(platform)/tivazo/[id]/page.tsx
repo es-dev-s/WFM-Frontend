@@ -77,7 +77,7 @@ export default function TivazoActivityPage() {
                     metrics.trackedSeconds > 0
                       ? metrics.met
                         ? "Met"
-                        : "Not met"
+                        : `${metrics.shortfallLabel} needed`
                       : "—",
                 },
               ]}
