@@ -28,6 +28,7 @@ export default function BiomaticLogPage() {
       row
         ? workdayTimeMetrics({
             source: "bio",
+            status: row.status,
             trackedTime: row.trackedTime,
             inTime: row.inTime,
             outTime: row.outTime,

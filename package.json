@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed:wfm": "tsx scripts/seed-wfm.ts"
+    "seed:wfm": "tsx scripts/seed-wfm.ts",
+    "import:records": "tsx scripts/import-records.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

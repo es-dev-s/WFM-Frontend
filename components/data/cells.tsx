@@ -70,11 +70,14 @@ export function PersonCell({
   email,
   avatarUrl,
   size = "md",
+  offboarding,
 }: {
   name: string;
   email?: string;
   avatarUrl?: string;
   size?: "md" | "lg";
+  /** Resignation record, when HR has recorded one. */
+  offboarding?: { status: string; lastWorkingDate: string };
 }) {
   const src = avatarUrl?.trim();
   const show = Boolean(src && /^https?:\/\//i.test(src));
@@ -95,7 +98,18 @@ export function PersonCell({
         </span>
       )}
       <span className="smp-person__copy">
-        <span className="smp-person__name">{fullName}</span>
+        <span className="smp-person__name">
+          {fullName}
+          {offboarding ? (
+            <span
+              className="smp-pill smp-person__notice"
+              data-tone={offboarding.status === "Resigned" ? "bad" : "warn"}
+              title={`${offboarding.status} · last working day ${offboarding.lastWorkingDate}`}
+            >
+              {offboarding.status === "Resigned" ? "Resigned" : `Notice · ${offboarding.lastWorkingDate}`}
+            </span>
+          ) : null}
+        </span>
         {mail && mail !== "—" ? (
           <span className="smp-person__email">{mail}</span>
         ) : null}
@@ -214,6 +228,7 @@ export function activityFactGroups(
   const primaryGroup = dash(row.group);
   const metrics = workdayTimeMetrics({
     source,
+    status: row.status,
     trackedTime: row.trackedTime,
     inTime: row.inTime,
     outTime: row.outTime,
@@ -231,6 +246,7 @@ export function activityFactGroups(
     source === "tivazo" && hasPunch
       ? workdayTimeMetrics({
           source: "bio",
+          status: row.status,
           inTime: row.inTime,
           outTime: row.outTime,
         })
@@ -285,6 +301,11 @@ export function activityFactGroups(
               : "—",
           keep: true,
         },
+        {
+          label: "OT",
+          value: metrics.overtimeLabel,
+          keep: true,
+        },
         ...(bioMetrics && bioMetrics.trackedSeconds > 0
           ? [
               {
@@ -322,6 +343,11 @@ export function activityFactGroups(
                 ? "Met"
                 : `${metrics.shortfallLabel} needed`
               : "—",
+          keep: true,
+        },
+        {
+          label: "OT",
+          value: metrics.overtimeLabel,
           keep: true,
         },
         { label: "Manual", value: dash(row.manualTime), keep: true },

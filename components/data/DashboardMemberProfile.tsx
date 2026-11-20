@@ -88,6 +88,7 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
   const hasTivazo = member.sources.includes("Tivazo");
   const bioMetrics = workdayTimeMetrics({
     source: "bio",
+    status: member.biometrics.day,
     inTime: member.biometrics.inTime,
     outTime: member.biometrics.outTime,
   });
@@ -138,6 +139,7 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
                   : "—",
               tone: bioMetrics.trackedSeconds > 0 ? (bioMetrics.met ? "ok" : "bad") : undefined,
             },
+            { label: "OT", value: bioMetrics.overtimeLabel },
             { label: "Team", value: member.biometrics.department },
             { label: "Role", value: member.biometrics.designation },
           ]}
@@ -161,6 +163,7 @@ export function DashboardMemberProfile({ member }: { member: DashboardMemberFocu
                   : "—",
               tone: tivazoMetrics.trackedSeconds > 0 ? (tivazoMetrics.met ? "ok" : "bad") : undefined,
             },
+            { label: "OT", value: tivazoMetrics.overtimeLabel },
             { label: "Team", value: member.tivazo.group },
             { label: "Role", value: member.tivazo.designation },
           ]}

@@ -21,7 +21,10 @@ export function StatusPill({ value }: { value: string }) {
           compact === "weeklyoff" ||
           compact === "weekoff"
         ? "warn"
-        : normalized === "absent" ||
+        : normalized === "serving notice"
+        ? "warn"
+        : normalized === "resigned" ||
+            normalized === "absent" ||
             normalized === "inactive" ||
             normalized === "offline" ||
             normalized === "disabled" ||

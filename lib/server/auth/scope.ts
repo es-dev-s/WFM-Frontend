@@ -6,6 +6,7 @@ import { BffError } from "@/lib/server/upstream";
 import type { JsonMap } from "@/lib/server/upstream";
 import type { FilterOption } from "@/lib/api";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { excludeSeparated } from "@/lib/server/offboarding-scope";
 
 export type ScopeSource = TeamAssignment["source"];
 
@@ -171,6 +172,8 @@ export function filterMembersForLead<T extends JsonMap>(
   members: T[],
   source?: ScopeSource,
 ): T[] {
+  // Resigned employees leave active headcount from their agreed effective date.
+  members = excludeSeparated(members);
   const assignments = relevantAssignments(source);
   if (!assignments) return members;
   if (!assignments.length) return [];

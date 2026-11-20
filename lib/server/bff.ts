@@ -86,6 +86,12 @@ import {
 } from "@/lib/server/upstream";
 import { isTeamLead } from "@/lib/server/auth/context";
 import {
+  allOffboarding,
+  annotateOffboarding,
+  offboardingCacheKey,
+  runWithOffboarding,
+} from "@/lib/server/offboarding-scope";
+import {
   assertTeamAccess,
   catalogFromGroups,
   filterMembersForLead,
@@ -163,6 +169,23 @@ function breakLabel(...sources: unknown[]): string {
     if (label) return label;
   }
   return formatSecondsLabel(0);
+}
+
+/**
+ * Tivazo does not report breaks directly. Break is the part of the clocked-in
+ * span (clock-in → last screenshot) not covered by tracked + manual time.
+ * Mirrors WFM-Backend `tivazo.ActivityBreakSeconds`.
+ */
+function derivedBreakSeconds(clockedMs: number, shotMs: number, workSeconds: number): number {
+  if (clockedMs <= 0 || shotMs <= clockedMs) return 0;
+  const span = Math.floor((shotMs - clockedMs) / 1000);
+  return Math.max(0, span - Math.max(0, workSeconds));
+}
+
+/** An explicit break value from Tivazo wins; otherwise fall back to the derived one. */
+function breakLabelOr(derivedSeconds: number, ...sources: unknown[]): string {
+  const explicit = breakLabel(...sources);
+  return explicit !== formatSecondsLabel(0) ? explicit : formatSecondsLabel(derivedSeconds);
 }
 
 type BioSummary = {
@@ -784,12 +807,110 @@ function warmLiveSnapshots(_start: string, _end: string) {
 }
 
 function scopeCacheKey(): string {
-  if (!isTeamLead()) return "org";
+  // Resignation records change who is counted, so they are part of every cached view's key.
+  const offboarding = offboardingCacheKey();
+  if (!isTeamLead()) return `org|${offboarding}`;
   const assigned = (leadAssignments() ?? [])
     .map((item) => `${item.source}:${item.teamId}`)
     .sort()
     .join("|");
-  return assigned || "lead";
+  return `${assigned || "lead"}|${offboarding}`;
+}
+
+export type OffboardingDiscrepancy = {
+  kind: "still_active" | "inactive_without_record" | "not_in_systems";
+  name: string;
+  email: string;
+  team: string;
+  lastWorkingDate: string;
+  recordId: string;
+  systems: string[];
+  detail: string;
+};
+
+/**
+ * Periodic reconciliation between HR's resignation records and the live rosters:
+ *  - resigned (effective date reached) but still listed/active in Tivazo or Biometrics
+ *  - disabled in Tivazo but no resignation record
+ *  - a record whose employee matches nobody in either system (likely a wrong email)
+ */
+async function offboardingDiscrepancies(): Promise<{
+  asOf: string;
+  items: OffboardingDiscrepancy[];
+}> {
+  if (isTeamLead()) {
+    throw new BffError(403, "forbidden", "Offboarding checks are limited to WFM and HR.");
+  }
+  const today = todayInAppZone();
+  const [records, bio, tivazo] = await Promise.all([
+    allOffboarding(),
+    cachedBioLive(today, today),
+    cachedTivazoLive(today, today),
+  ]);
+  const catalog = new Map<string, string>();
+  const keyOf = (row: JsonMap) => [memberEmail(row), asString(row.id).toLowerCase()].filter(Boolean);
+  const index = (rows: JsonMap[]) => {
+    const map = new Map<string, JsonMap>();
+    for (const row of rows) for (const key of keyOf(row)) if (!map.has(key)) map.set(key, row);
+    return map;
+  };
+  const bioIdx = index(bio);
+  const tivIdx = index(tivazo.members);
+  const find = (idx: Map<string, JsonMap>, record: { employeeEmail: string; memberId: string }) =>
+    idx.get(record.employeeEmail.toLowerCase()) ?? idx.get(record.memberId.toLowerCase());
+
+  const items: OffboardingDiscrepancy[] = [];
+  const recorded = new Set<string>();
+  for (const record of records) {
+    if (record.employeeEmail) recorded.add(record.employeeEmail.toLowerCase());
+    if (record.memberId) recorded.add(record.memberId.toLowerCase());
+    const inBio = find(bioIdx, record);
+    const inTivazo = find(tivIdx, record);
+    const base = {
+      name: record.employeeName,
+      email: record.employeeEmail,
+      team: record.team,
+      lastWorkingDate: record.lastWorkingDate,
+      recordId: record.id,
+    };
+    if (!inBio && !inTivazo) {
+      items.push({
+        ...base,
+        kind: "not_in_systems",
+        systems: [],
+        detail: "No matching employee in Tivazo or Biometrics. Check the email or member id.",
+      });
+      continue;
+    }
+    if (record.effectiveDate > today) continue; // still serving notice: nothing to reconcile
+    const systems: string[] = [];
+    if (inTivazo && !asBool(inTivazo.disabled)) systems.push("Tivazo");
+    if (inBio) systems.push("Biometrics");
+    if (systems.length) {
+      items.push({
+        ...base,
+        kind: "still_active",
+        systems,
+        detail: `Resigned (last day ${record.lastWorkingDate}) but still active in ${systems.join(" and ")}.`,
+      });
+    }
+  }
+  for (const row of tivazo.members) {
+    if (!asBool(row.disabled)) continue;
+    if (keyOf(row).some((key) => recorded.has(key))) continue;
+    items.push({
+      kind: "inactive_without_record",
+      name: asString(row.name) || "Unknown",
+      email: asString(row.email),
+      team: coverageTeam(row, catalog),
+      lastWorkingDate: "",
+      recordId: "",
+      systems: ["Tivazo"],
+      detail: "Disabled in Tivazo but no resignation record. Record the resignation or reactivate the account.",
+    });
+  }
+  items.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  return { asOf: today, items };
 }
 
 let presetWarmStarted = false;
@@ -961,7 +1082,18 @@ function tivazoMemberRow(raw: JsonMap, date: string): DailyLogRow {
     manualTime: showPunches
       ? asString(raw.manual_label) || formatSecondsLabel(asNumber(raw.manual_seconds))
       : "",
-    breakTime: breakLabel(raw.activity, raw.user, raw),
+    breakTime: showPunches
+      ? breakLabelOr(
+          derivedBreakSeconds(
+            clockedMs,
+            shotMs,
+            asNumber(raw.tracked_seconds) + asNumber(raw.manual_seconds),
+          ),
+          raw.activity,
+          raw.user,
+          raw,
+        )
+      : formatSecondsLabel(0),
     occupancy: attendance === "Present" ? "100%" : "0%",
     utilization: showPunches ? utilization(asNumber(raw.tracked_seconds)) : "0%",
     wtr: showPunches ? utilization(asNumber(raw.tracked_seconds)) : "0%",
@@ -1028,7 +1160,19 @@ function activityRow(act: JsonMap, member: JsonMap | undefined, fallbackDate: st
     outTime: showPunches ? clockLabel(asNumber(act.last_taken_screenshot)) : "",
     trackedTime: showPunches ? formatSecondsLabel(tracked) : "",
     manualTime: showPunches ? formatSecondsLabel(asNumber(act.manualTime)) : "",
-    breakTime: breakLabel(act, act.payload, member?.activity, member),
+    breakTime: showPunches
+      ? breakLabelOr(
+          derivedBreakSeconds(
+            asNumber(act.clocked_in),
+            asNumber(act.last_taken_screenshot),
+            tracked + asNumber(act.manualTime),
+          ),
+          act,
+          act.payload,
+          member?.activity,
+          member,
+        )
+      : formatSecondsLabel(0),
     occupancy: status === "Present" ? "100%" : "0%",
     utilization: showPunches ? utilization(tracked) : "0%",
     wtr: showPunches ? utilization(tracked) : "0%",
@@ -1216,7 +1360,12 @@ export async function handleBff(path: string[], request: Request): Promise<unkno
   scheduleAttendanceBackfill();
   warmLiveSnapshots(start, end);
   const catalog = await fetchTivazoCatalog(url);
-  return runWithCatalog(catalog, () => dispatchBff(path, url, signal));
+  // Headcount is evaluated as of the end of the requested range (or today).
+  const today = todayInAppZone();
+  const referenceDay = end && end < today ? end : today;
+  return runWithOffboarding(referenceDay, async () =>
+    annotateOffboarding(await runWithCatalog(catalog, () => dispatchBff(path, url, signal))),
+  );
 }
 
 async function dispatchBff(path: string[], url: URL, signal?: AbortSignal): Promise<unknown> {
@@ -1233,6 +1382,8 @@ async function dispatchBff(path: string[], url: URL, signal?: AbortSignal): Prom
       return dashboardTrend(url, signal);
     case "dashboard/presence":
       return dashboardPresence(url);
+    case "offboarding/discrepancies":
+      return offboardingDiscrepancies();
     case "biomatic/summary":
       return biomaticSummary(url, signal);
     case "teams":

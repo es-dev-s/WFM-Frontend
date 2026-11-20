@@ -205,6 +205,54 @@ export type Transfer = {
   createdAt: string;
 };
 
+export type OffboardingStatus = "Serving notice" | "Resigned";
+
+/** Present on member and log rows whose employee has a resignation record. */
+export type RowOffboarding = {
+  status: OffboardingStatus;
+  lastWorkingDate: string;
+};
+
+export type OffboardingRecord = {
+  id: string;
+  memberId: string;
+  employeeName: string;
+  employeeEmail: string;
+  team: string;
+  resignationDate: string;
+  lastWorkingDate: string;
+  /** First day the employee no longer counts toward active headcount. */
+  effectiveDate: string;
+  status: OffboardingStatus;
+  reason: string;
+  notes: string;
+  recordedBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OffboardingList = {
+  items: OffboardingRecord[];
+  total: number;
+  today: string;
+};
+
+export type OffboardingDiscrepancy = {
+  kind: "still_active" | "inactive_without_record" | "not_in_systems";
+  name: string;
+  email: string;
+  team: string;
+  lastWorkingDate: string;
+  recordId: string;
+  systems: string[];
+  detail: string;
+};
+
+export type OffboardingDiscrepancies = {
+  asOf: string;
+  items: OffboardingDiscrepancy[];
+};
+
 export type TransferPage = {
   items: Transfer[];
   total: number;
@@ -478,6 +526,7 @@ export type MemberComposition = {
 };
 
 export type Member = {
+  offboarding?: RowOffboarding;
   id: string;
   employeeId: string;
   teamId: string;
@@ -510,6 +559,7 @@ export type MemberDirectoryRow = Member & {
 };
 
 export type DailyLogRow = {
+  offboarding?: RowOffboarding;
   id: string;
   date: string;
   rawDate: string;

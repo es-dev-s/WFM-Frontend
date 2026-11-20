@@ -7628,3 +7628,9 @@ button.smp-punch-cell[data-interactive="true"]:hover {
   gap: 8px;
   color: var(--smp-ink-tertiary);
 }
+
+.smp-person__notice {
+  margin-left: 6px;
+  vertical-align: middle;
+  font-size: 11px;
+}

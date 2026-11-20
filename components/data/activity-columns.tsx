@@ -20,7 +20,7 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     person: true,
     priority: 1,
     render: (row) => (
-      <PersonCell name={row.name} email={row.email} avatarUrl={row.avatarUrl} />
+      <PersonCell name={row.name} email={row.email} avatarUrl={row.avatarUrl} offboarding={row.offboarding} />
     ),
   },
   {
@@ -84,6 +84,7 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     render: (row) => {
       const m = workdayTimeMetrics({
         source: "bio",
+        status: row.status,
         trackedTime: row.trackedTime,
         inTime: row.inTime,
         outTime: row.outTime,
@@ -100,6 +101,7 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     render: (row) => {
       const m = workdayTimeMetrics({
         source: "bio",
+        status: row.status,
         trackedTime: row.trackedTime,
         inTime: row.inTime,
         outTime: row.outTime,
@@ -118,6 +120,23 @@ export const ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
       );
     },
   },
+  {
+    id: "overtime",
+    header: "OT",
+    width: "80px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        status: row.status,
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.overtimeLabel} />;
+    },
+  },
 ];
 
 export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
@@ -130,7 +149,7 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     person: true,
     priority: 1,
     render: (row) => (
-      <PersonCell name={row.name} email={row.email} avatarUrl={row.avatarUrl} />
+      <PersonCell name={row.name} email={row.email} avatarUrl={row.avatarUrl} offboarding={row.offboarding} />
     ),
   },
   {
@@ -237,6 +256,22 @@ export const TIVAZO_ACTIVITY_COLUMNS: DataColumn<DailyLogRow>[] = [
     },
   },
   {
+    id: "overtime",
+    header: "OT",
+    width: "80px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "tivazo",
+        trackedTime: row.trackedTime,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.overtimeLabel} />;
+    },
+  },
+  {
     id: "manual",
     header: "Manual",
     width: "96px",
@@ -278,7 +313,7 @@ export const MEMBER_COLUMNS: DataColumn<MemberDirectoryRow>[] = [
     person: true,
     priority: 1,
     render: (row) => (
-      <PersonCell name={row.name} email={row.email} avatarUrl={row.avatarUrl} />
+      <PersonCell name={row.name} email={row.email} avatarUrl={row.avatarUrl} offboarding={row.offboarding} />
     ),
   },
   {
@@ -412,6 +447,7 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
     render: (row) => {
       const m = workdayTimeMetrics({
         source: "bio",
+        status: row.status,
         inTime: row.inTime,
         outTime: row.outTime,
       });
@@ -427,6 +463,7 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
     render: (row) => {
       const m = workdayTimeMetrics({
         source: "bio",
+        status: row.status,
         inTime: row.inTime,
         outTime: row.outTime,
       });
@@ -442,6 +479,22 @@ export const ENTRY_COLUMNS: DataColumn<DailyEntry>[] = [
           tone={m.met ? "ok" : "primary"}
         />
       );
+    },
+  },
+  {
+    id: "overtime",
+    header: "OT",
+    width: "80px",
+    align: "right",
+    priority: 2,
+    render: (row) => {
+      const m = workdayTimeMetrics({
+        source: "bio",
+        status: row.status,
+        inTime: row.inTime,
+        outTime: row.outTime,
+      });
+      return <CellText value={m.overtimeLabel} />;
     },
   },
 ];

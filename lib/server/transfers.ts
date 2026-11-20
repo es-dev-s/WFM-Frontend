@@ -1,7 +1,12 @@
+import { randomBytes } from "node:crypto";
+import { query } from "@/lib/server/auth/db";
+import { ensureRecordsSchema } from "@/lib/server/records/schema";
+import {
+  isValidDay,
+  normalizeTransfer,
+  validateTransfer,
+} from "@/lib/server/records/validation";
 import { BffError } from "@/lib/server/upstream";
-
-const WFM_API_ORIGIN =
-  process.env.WFM_API_ORIGIN?.replace(/\/$/, "") || "http://127.0.0.1:18780";
 
 export type TransferRecord = {
   id: string;
@@ -37,70 +42,126 @@ export type TransferInput = {
   recordedBy?: string;
 };
 
-async function wfmApi<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
-  const token = process.env.WFM_API_TOKEN?.trim();
-  if (token && init.method === "POST") headers.set("Authorization", `Bearer ${token}`);
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
 
-  let response: Response;
-  try {
-    response = await fetch(`${WFM_API_ORIGIN}${path}`, {
-      ...init,
-      headers,
-      cache: "no-store",
-      signal: init.signal ?? AbortSignal.timeout(10_000),
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError" && init.signal?.aborted) throw error;
-    throw new BffError(
-      502,
-      "network_error",
-      "Can’t reach the WFM API. Confirm the backend is running.",
-    );
-  }
+type TransferRow = {
+  id: string;
+  member_id: string;
+  employee_name: string;
+  employee_email: string;
+  previous_team: string;
+  new_team: string;
+  transfer_date: string;
+  reason: string;
+  notes: string;
+  recorded_by: string;
+  created_at: Date;
+};
 
-  const text = await response.text();
-  let parsed: unknown = null;
-  if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-  }
+const COLUMNS = `id, member_id, employee_name, employee_email, previous_team, new_team,
+  to_char(transfer_date, 'YYYY-MM-DD') AS transfer_date, reason, notes, recorded_by, created_at`;
 
-  if (!response.ok) {
-    const body = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
-    // Only 4xx validation messages are safe and useful to show; hide 5xx internals.
-    const message =
-      response.status >= 400 && response.status < 500 && typeof body.message === "string"
-        ? body.message
-        : "The WFM API could not complete this request.";
-    const status = response.status === 401 ? 502 : response.status;
-    throw new BffError(
-      status,
-      response.status === 401 ? "upstream_auth" : String(body.error || "http_error"),
-      response.status === 401 ? "The WFM API rejected this server’s credentials." : message,
-    );
-  }
-  return parsed as T;
+function toRecord(row: TransferRow): TransferRecord {
+  return {
+    id: row.id,
+    memberId: row.member_id,
+    employeeName: row.employee_name,
+    employeeEmail: row.employee_email,
+    previousTeam: row.previous_team,
+    newTeam: row.new_team,
+    transferDate: row.transfer_date,
+    reason: row.reason,
+    notes: row.notes,
+    recordedBy: row.recorded_by,
+    createdAt: row.created_at.toISOString(),
+  };
 }
 
-export function listTransfers(search: URLSearchParams, signal?: AbortSignal): Promise<TransferPage> {
-  const params = new URLSearchParams();
-  for (const key of ["q", "team", "from", "to", "limit", "offset"]) {
-    const value = search.get(key)?.trim();
-    if (value) params.set(key, value);
-  }
-  const query = params.toString();
-  return wfmApi<TransferPage>(`/api/v1/transfers${query ? `?${query}` : ""}`, { signal });
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
-export function createTransfer(input: TransferInput): Promise<TransferRecord> {
-  return wfmApi<TransferRecord>("/api/v1/transfers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
+function positiveInt(value: string | null | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export async function listTransfers(
+  search: URLSearchParams,
+  _signal?: AbortSignal,
+): Promise<TransferPage> {
+  await ensureRecordsSchema();
+  const text = (key: string) => search.get(key)?.trim() ?? "";
+  const from = text("from");
+  const to = text("to");
+  if (from && !isValidDay(from)) throw new BffError(400, "invalid_argument", "from must be YYYY-MM-DD");
+  if (to && !isValidDay(to)) throw new BffError(400, "invalid_argument", "to must be YYYY-MM-DD");
+
+  const limit = Math.min(Math.max(positiveInt(search.get("limit"), DEFAULT_LIMIT), 1), MAX_LIMIT);
+  const offset = positiveInt(search.get("offset"), 0);
+
+  const where: string[] = [];
+  const params: unknown[] = [];
+  const add = (sql: string, value: unknown) => {
+    params.push(value);
+    where.push(sql.replace("?", `$${params.length}`));
+  };
+  if (from) add("transfer_date >= ?::date", from);
+  if (to) add("transfer_date <= ?::date", to);
+  const team = text("team");
+  if (team) {
+    params.push(team);
+    where.push(`(lower(previous_team) = lower($${params.length}) OR lower(new_team) = lower($${params.length}))`);
+  }
+  const needle = text("q");
+  if (needle) {
+    add(
+      `lower(concat_ws(' ', employee_name, employee_email, member_id,
+        previous_team, new_team, reason, notes, recorded_by)) LIKE ?`,
+      `%${escapeLike(needle.toLowerCase())}%`,
+    );
+  }
+  const clause = where.length ? ` WHERE ${where.join(" AND ")}` : "";
+
+  const count = await query<{ total: number }>(
+    `SELECT COUNT(*)::int AS total FROM team_transfers${clause}`,
+    params,
+  );
+  const total = count.rows[0]?.total ?? 0;
+  const rows = await query<TransferRow>(
+    `SELECT ${COLUMNS} FROM team_transfers${clause}
+     ORDER BY transfer_date DESC, created_at DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset],
+  );
+  const items = rows.rows.map(toRecord);
+  return { items, total, limit, offset, hasMore: offset + items.length < total };
+}
+
+export async function createTransfer(input: TransferInput): Promise<TransferRecord> {
+  const fields = normalizeTransfer(input as unknown as Record<string, unknown>);
+  validateTransfer(fields);
+  await ensureRecordsSchema();
+  const id = `trf_${randomBytes(8).toString("hex")}`;
+  const result = await query<TransferRow>(
+    `INSERT INTO team_transfers
+       (id, member_id, employee_name, employee_email, previous_team, new_team,
+        transfer_date, reason, notes, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10)
+     RETURNING ${COLUMNS}`,
+    [
+      id,
+      fields.memberId,
+      fields.employeeName,
+      fields.employeeEmail,
+      fields.previousTeam,
+      fields.newTeam,
+      fields.transferDate,
+      fields.reason,
+      fields.notes,
+      fields.recordedBy,
+    ],
+  );
+  return toRecord(result.rows[0]);
 }
